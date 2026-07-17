@@ -65,7 +65,7 @@
 	"dependencies": {
 		"@orkestrel/agent": "^0.0.4",
 		"@orkestrel/contract": "^0.0.1",
-		"@orkestrel/workflow": "^0.0.3"
+		"@orkestrel/workflow": "^0.0.4"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.58.9",
