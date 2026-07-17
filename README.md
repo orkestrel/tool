@@ -1,15 +1,17 @@
-# @orkestrel/agent
+# @orkestrel/tool
 
-A typed **agent runtime** for the `@orkestrel` line — providers, tools,
-conversations, workspaces, and a composable agent context. `createAgent`
-composes a `ProviderInterface`, an `AgentContextInterface`, and a tool
-registry into a bounded context → provider → tools → repeat turn, exposed as
-a one-shot `generate` and a live `stream`. Part of the `@orkestrel` line.
+Concrete, LLM-callable **tools** for the `@orkestrel` line — workflow
+authoring, workspace editing, and sub-agent delegation — built over
+[`@orkestrel/agent`](https://github.com/orkestrel/agent)'s `ToolInterface` /
+`createTool` runtime, with pluggable stores. Part of the `@orkestrel` line.
+
+**Status: under construction.** The package shell, gates, and guide-parity
+harness are in place; the concrete tools below are the roadmap.
 
 ## Install
 
 ```sh
-npm install @orkestrel/agent
+npm install @orkestrel/tool
 ```
 
 ## Requirements
@@ -17,36 +19,18 @@ npm install @orkestrel/agent
 - Node.js >= 24
 - Dual ESM + CommonJS builds (`import` and `require` both supported)
 
-## Usage
+## Roadmap
 
-```ts
-import { createAgent, createTool, createToolManager } from '@orkestrel/agent'
-
-const tools = createToolManager()
-tools.add(
-	createTool({
-		name: 'add',
-		description: 'Add two numbers',
-		execute: (args) => Number(args.a) + Number(args.b),
-	}),
-)
-
-// `provider` is your ProviderInterface implementation (see the guide)
-const agent = createAgent(provider, { system: 'You are concise.', tools })
-agent.context.messages.add({ role: 'user', content: 'Say hi.' })
-
-const stream = agent.stream()
-for await (const chunk of stream.events) {
-	if (chunk.type === 'token') process.stdout.write(chunk.content)
-}
-const result = await stream.result // { content, usage?, partial }
-```
+- **Workflow authoring** — a tool for composing and editing
+  [`@orkestrel/workflow`](https://github.com/orkestrel/workflow) definitions.
+- **Workspace editing** — a tool wrapping an agent `Workspace`'s read /
+  write / search / replace surface.
+- **Sub-agent delegation** — a tool for dispatching bounded work to a
+  sub-agent and returning its result.
 
 ## Guide
 
-For the full surface — providers, the agent loop, tools, conversations,
-workspaces, and the composable `AgentContext` — see
-[`guides/src/agent.md`](guides/src/agent.md).
+See [`guides/src/tool.md`](guides/src/tool.md).
 
 ## Package
 

@@ -1,21 +1,21 @@
 {
-	"name": "@orkestrel/agent",
-	"version": "0.0.3",
-	"description": "A typed agent runtime for the @orkestrel line — providers, tools, conversations, workspaces, and a composable agent context. Part of the @orkestrel line.",
+	"name": "@orkestrel/tool",
+	"version": "0.0.1",
+	"description": "Concrete LLM-callable tools for the @orkestrel line — workflow authoring, workspace editing, and sub-agent delegation, over the agent tool runtime, with pluggable stores. Part of the @orkestrel line.",
 	"keywords": [
 		"agent",
-		"conversation",
 		"llm",
-		"provider",
 		"tool",
-		"typescript"
+		"typescript",
+		"workflow",
+		"workspace"
 	],
-	"homepage": "https://github.com/orkestrel/agent#readme",
-	"bugs": "https://github.com/orkestrel/agent/issues",
+	"homepage": "https://github.com/orkestrel/tool#readme",
+	"bugs": "https://github.com/orkestrel/tool/issues",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/orkestrel/agent.git"
+		"url": "git+https://github.com/orkestrel/tool.git"
 	},
 	"files": [
 		"dist",
@@ -63,13 +63,8 @@
 		"prepublishOnly": "npm run format:check && npm run lint:check && npm run check && npm run check:src && npm run build && npm test"
 	},
 	"dependencies": {
-		"@orkestrel/abort": "^0.0.1",
-		"@orkestrel/budget": "^0.0.1",
+		"@orkestrel/agent": "^0.0.3",
 		"@orkestrel/contract": "^0.0.1",
-		"@orkestrel/database": "^0.0.2",
-		"@orkestrel/emitter": "^0.0.1",
-		"@orkestrel/queue": "^0.0.1",
-		"@orkestrel/timeout": "^0.0.1",
 		"@orkestrel/workflow": "^0.0.2"
 	},
 	"devDependencies": {
