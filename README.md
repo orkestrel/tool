@@ -1,12 +1,29 @@
 # @orkestrel/tool
 
-Concrete, LLM-callable **tools** for the `@orkestrel` line — workflow
-authoring, workspace editing, and sub-agent delegation — built over
+Concrete, LLM-callable **tools** for the `@orkestrel` line — built over
 [`@orkestrel/agent`](https://github.com/orkestrel/agent)'s `ToolInterface` /
 `createTool` runtime, with pluggable stores. Part of the `@orkestrel` line.
 
-**Status: under construction.** The package shell, gates, and guide-parity
-harness are in place; the concrete tools below are the roadmap.
+- **`createWorkflowTool`** — authors and runs an
+  [`@orkestrel/workflow`](https://github.com/orkestrel/workflow) definition in
+  one call (flat steps / lenient draft / full definition, depth + cycle
+  guarded), with an optional pluggable `WorkflowStoreInterface` that persists
+  each executed run's snapshot on settle.
+- **`createWorkspaceTool`** — a 13-operation workspace-editing tool driving
+  `@orkestrel/agent`'s workspace runtime, either against a caller-supplied
+  manager or a fresh one built over a pluggable `WorkspaceStoreInterface`.
+- **`createAgentTool`** — net-new sub-agent delegation: resolves and runs one
+  seeded agent via an `AgentRegistryInterface`, depth + cycle guarded,
+  deliberately storeless (persistence, if any, rides the registry's own
+  configuration).
+- **Adapters** — `createToolFunction` / `createAgentFunction` compose a
+  registered tool or a live agent into a workflow's `functions` registry, plus
+  the authoring umbrella (`WorkflowSteps` / `WorkflowDraft`,
+  `createWorkflowDraftContract`, `workflowToolSummary`, `MAX_WORKFLOW_DEPTH`).
+
+**Status: v0.0.1 pending publish**, once the upstream `@orkestrel/workflow` /
+`@orkestrel/agent` cleanups that drop their authoring surfaces (this package
+becomes the defining home) land.
 
 ## Install
 
@@ -18,15 +35,6 @@ npm install @orkestrel/tool
 
 - Node.js >= 24
 - Dual ESM + CommonJS builds (`import` and `require` both supported)
-
-## Roadmap
-
-- **Workflow authoring** — a tool for composing and editing
-  [`@orkestrel/workflow`](https://github.com/orkestrel/workflow) definitions.
-- **Workspace editing** — a tool wrapping an agent `Workspace`'s read /
-  write / search / replace surface.
-- **Sub-agent delegation** — a tool for dispatching bounded work to a
-  sub-agent and returning its result.
 
 ## Guide
 

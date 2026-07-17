@@ -1,3 +1,11 @@
+import type {
+	MessageInterface,
+	ProviderDelta,
+	ProviderInterface,
+	ProviderResult,
+} from '@orkestrel/agent'
+import { ProviderAbortError } from '@orkestrel/agent'
+
 /**
  * Resolve after `ms` milliseconds — the single shared delay helper (AGENTS §16.1),
  * for letting a real short timer elapse instead of inlining a `setTimeout` promise
@@ -101,6 +109,101 @@ export function createRecorder<TArgs extends readonly unknown[]>(): TestRecorder
 		},
 		clear() {
 			calls.length = 0
+		},
+	}
+}
+
+// ── Scripted ProviderInterface (Ollama-free agent fixture) ───────────────────
+//
+// AGENTS §16.1: the ONE general scripted `ProviderInterface` the agent-touching tests in
+// this package drive (createAgentFunction / createAgentTool). Trimmed from
+// `@orkestrel/agent`'s own test fixture to the minimum this package's tests need — a real
+// provider (NOT a mock of the agent): `stream` returns each turn's whole content as one
+// delta and RETURNS the result, honouring `signal` so an abort mid-stream throws a
+// `ProviderAbortError` carrying the accumulated partial (a genuine cancel-fold proof).
+
+/** One recorded `generate` / `stream` call on a {@link createScriptedProvider}. */
+export interface ScriptedCall {
+	readonly messages: readonly MessageInterface[]
+}
+
+/**
+ * Options for {@link createScriptedProvider} — every field optional.
+ *
+ * @remarks
+ * `delay` pauses (ms) at the start of each call, letting a test observe an abort firing
+ * mid-generate; defaults to `0`.
+ */
+export interface ScriptedProviderOptions {
+	readonly delay?: number
+}
+
+/**
+ * A scripted {@link ProviderInterface} plus its `started` call count and recorded `calls` —
+ * the minimal fixture {@link createScriptedProvider} returns.
+ */
+export interface ScriptedProviderInterface extends ProviderInterface {
+	/** How many `stream` calls have started in total. */
+	readonly started: number
+	/** Each call's `messages`, in order. */
+	readonly calls: readonly ScriptedCall[]
+}
+
+/**
+ * Create a trimmed scripted {@link ProviderInterface} for deterministic, Ollama-free agent
+ * tests — each `generate` / `stream` call consumes the next `ProviderResult` (the last
+ * repeats once the list is exhausted), streaming its whole content as ONE delta and
+ * RETURNING the result. Honours `signal`: an already-aborted (or mid-stream aborted) signal
+ * throws a `ProviderAbortError` carrying the accumulated partial, so a cancel threaded into
+ * the agent commits a genuine partial (AGENTS §16.1 — one shared fixture, not a per-test
+ * hand-roll).
+ *
+ * @param turns - The `ProviderResult`s to replay in order (the last repeats)
+ * @param options - The {@link ScriptedProviderOptions} (all optional)
+ * @returns A {@link ScriptedProviderInterface} (the provider + its recorders)
+ */
+export function createScriptedProvider(
+	turns: readonly ProviderResult[],
+	options?: ScriptedProviderOptions,
+): ScriptedProviderInterface {
+	const delay = options?.delay ?? 0
+	const calls: ScriptedCall[] = []
+	let index = 0
+	let started = 0
+	async function* stream(
+		messages: readonly MessageInterface[],
+		signal: AbortSignal,
+	): AsyncGenerator<ProviderDelta, ProviderResult> {
+		calls.push({ messages: [...messages] })
+		started += 1
+		if (signal.aborted) throw new ProviderAbortError({ content: '' })
+		if (delay > 0) await waitForDelay(delay)
+		const turn = turns[Math.min(index, turns.length - 1)] ?? { content: '' }
+		index += 1
+		let streamed = ''
+		for (const delta of [turn.content]) {
+			if (signal.aborted) throw new ProviderAbortError({ content: streamed })
+			streamed += delta
+			if (delta.length > 0) yield { type: 'content', text: delta }
+		}
+		if (signal.aborted) throw new ProviderAbortError({ content: streamed })
+		return turn
+	}
+	return {
+		id: 'scripted',
+		name: 'scripted',
+		get started() {
+			return started
+		},
+		get calls() {
+			return calls
+		},
+		stream,
+		async generate(messages, signal) {
+			const generator = stream(messages, signal)
+			let step = await generator.next()
+			while (!step.done) step = await generator.next()
+			return step.value
 		},
 	}
 }
