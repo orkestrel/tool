@@ -49,6 +49,20 @@ export const agentToolShape = objectShape({
 	),
 })
 
+/**
+ * The shape of {@link import('./types.js').DescribeToolArguments} —
+ * {@link import('./factories.js').createDescribeTool}'s advertised `parameters`.
+ *
+ * @remarks
+ * `name` is the only field (a non-empty string) — the registered tool name to look up.
+ */
+export const describeToolShape = objectShape({
+	name: stringShape({
+		min: 1,
+		description: 'The registered name of the tool whose full description to return.',
+	}),
+})
+
 // === Workflow draft / flat-steps shapes (OWNED here now, ported from `@orkestrel/workflow`)
 
 /**

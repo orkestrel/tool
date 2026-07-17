@@ -3,18 +3,22 @@ import type { AgentToolErrorCode } from './types.js'
 // Tool-package errors — one error class per domain this package mints its own error for.
 // `@orkestrel/workflow`'s `WorkflowError` and `@orkestrel/agent`'s `WorkspaceError` already
 // cover the workflow tool + workspace tool's failure paths (imported and thrown as-is, never
-// duplicated here per §6). `createAgentTool` is net-new and none of `@orkestrel/agent`'s error
-// classes fit a pre-run validation / guard failure (`AgentJobError` REQUIRES a settled partial
-// `AgentResult` it cannot construct before a run starts; `ConversationError` /
-// `ProviderAbortError` / `WorkspaceError` are each scoped to an unrelated domain) — so this
-// package mints ONE typed error, `AgentToolError`, mirroring `WorkflowError`'s exact shape
-// (`code` + optional `context`) for the same reason: a thrown, machine-readable, code-bearing
-// error the tool-handler contract (AGENTS §14) requires, never a `{ error }` return.
+// duplicated here per §6). `createAgentTool` / `createDescribeTool` are net-new and none of
+// `@orkestrel/agent`'s error classes fit a pre-run validation / guard failure (`AgentJobError`
+// REQUIRES a settled partial `AgentResult` it cannot construct before a run starts;
+// `ConversationError` / `ProviderAbortError` / `WorkspaceError` are each scoped to an unrelated
+// domain) — so this package mints ONE typed error, `AgentToolError`, mirroring `WorkflowError`'s
+// exact shape (`code` + optional `context`) for the same reason: a thrown, machine-readable,
+// code-bearing error the tool-handler contract (AGENTS §14) requires, never a `{ error }`
+// return. `AgentToolError` is this package's general TOOL-CALL error — not scoped to agent
+// delegation alone — so `createDescribeTool` (a malformed call / an unknown tool name) reuses it
+// rather than minting a second class for the same `TOOL` misuse semantics.
 
 /**
- * Thrown by {@link import('./factories.js').createAgentTool}'s handler on every failure path —
- * a malformed / unresolvable call (`TOOL`), or a delegation that would exceed the configured
- * depth bound or re-enter an ancestor (`DEPTH`).
+ * Thrown by {@link import('./factories.js').createAgentTool}'s and
+ * {@link import('./factories.js').createDescribeTool}'s handlers on every failure path — a
+ * malformed / unresolvable call or an unknown tool name (`TOOL`), or a delegation that would
+ * exceed the configured depth bound or re-enter an ancestor (`DEPTH`).
  *
  * @remarks
  * Carries a machine-readable `code` (see {@link import('./types.js').AgentToolErrorCode}) and

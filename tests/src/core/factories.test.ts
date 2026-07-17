@@ -1,15 +1,16 @@
 import type { AgentToolArguments } from '@src/core'
 import type { ToolResult } from '@orkestrel/agent'
+import type { WorkflowDraft } from '@src/core'
 import type {
 	TaskContext,
 	TaskControllerInterface,
 	WorkflowDefinition,
-	WorkflowDraft,
 } from '@orkestrel/workflow'
 import {
 	buildToolResult,
 	createAgent,
 	createAgentRegistry,
+	createMemoryConversationStore,
 	createMemoryWorkspaceStore,
 	createTool,
 	createToolManager,
@@ -18,20 +19,27 @@ import {
 import { isRecord } from '@orkestrel/contract'
 import {
 	createMemoryWorkflowStore,
-	createWorkflowDraftContract,
 	createWorkflowRunner,
 	isWorkflowError,
 } from '@orkestrel/workflow'
 import {
 	AGENT_TOOL_DEPTH,
+	AGENT_TOOL_SUMMARY,
 	createAgentFunction,
 	createAgentTool,
+	createDescribeTool,
 	createToolFunction,
+	createWorkflowDraftContract,
 	createWorkflowTool,
 	createWorkspaceTool,
+	DESCRIBE_TOOL_NAME,
 	isAgentToolError,
 	MAX_WORKFLOW_DEPTH,
+	WORKFLOW_TOOL_DESCRIPTION,
 	WORKFLOW_TOOL_NAME,
+	WORKFLOW_TOOL_SUMMARY,
+	WORKSPACE_TOOL_DESCRIPTION,
+	WORKSPACE_TOOL_SUMMARY,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createRecorder, createScriptedProvider, waitForDelay } from '../../setup.js'
@@ -618,5 +626,171 @@ describe('createAgentTool — abort fold (abort during generate settles per the 
 		const result = await tool.execute({ task: 'do it' })
 		expect(result).toBe('partial-delegate')
 		expect(provider.started).toBe(1)
+	})
+})
+
+// ── net-new: createAgentTool's store slot (agent 0.0.4 addition) ─────────────
+
+describe('createAgentTool — the optional conversation store slot (this package`s addition)', () => {
+	it('a successful delegation PERSISTS the sub-agent`s conversation snapshot into the provided store', async () => {
+		const backing = createMemoryConversationStore()
+		const seen = createRecorder<readonly [string]>()
+		const store = {
+			get: (id: string) => backing.get(id),
+			set: async (snapshot: Awaited<ReturnType<typeof backing.get>> & object) => {
+				seen.handler(snapshot.id)
+				await backing.set(snapshot)
+			},
+			delete: (id: string) => backing.delete(id),
+		}
+		const provider = createScriptedProvider([{ content: 'delegated' }])
+		const registry = createAgentRegistry({ providers: { main: provider } })
+		const tool = createAgentTool(registry, { provider: 'main', store })
+		const result = await tool.execute({ task: 'summarize the notes' })
+		expect(result).toBe('delegated')
+		expect(seen.count).toBe(1)
+		const stored = await backing.get(seen.calls[0]?.[0] ?? '')
+		expect(stored).toBeDefined()
+	})
+
+	it('two delegations through the SAME store slot persist TWO distinct snapshots', async () => {
+		const backing = createMemoryConversationStore()
+		const seen = createRecorder<readonly [string]>()
+		const store = {
+			get: (id: string) => backing.get(id),
+			set: async (snapshot: Awaited<ReturnType<typeof backing.get>> & object) => {
+				seen.handler(snapshot.id)
+				await backing.set(snapshot)
+			},
+			delete: (id: string) => backing.delete(id),
+		}
+		const provider = createScriptedProvider([{ content: 'first' }, { content: 'second' }])
+		const registry = createAgentRegistry({ providers: { main: provider } })
+		const tool = createAgentTool(registry, { provider: 'main', store })
+		await tool.execute({ task: 'first task' })
+		await tool.execute({ task: 'second task' })
+		expect(seen.count).toBe(2)
+		expect(new Set(seen.calls.map((call) => call[0])).size).toBe(2)
+	})
+
+	it('an ABSENT store has no persistence side effects (the storeless path is unchanged)', async () => {
+		const provider = createScriptedProvider([{ content: 'no-store-result' }])
+		const registry = createAgentRegistry({ providers: { main: provider } })
+		const tool = createAgentTool(registry, { provider: 'main' })
+		const result = await tool.execute({ task: 'do it' })
+		expect(result).toBe('no-store-result')
+	})
+
+	it('a store failure surfaces as the tool call`s failure via the manager envelope', async () => {
+		const failingStore = {
+			get: async () => undefined,
+			set: async () => {
+				throw new Error('store unavailable')
+			},
+			delete: async () => undefined,
+		}
+		const provider = createScriptedProvider([{ content: 'x' }])
+		const registry = createAgentRegistry({ providers: { main: provider } })
+		const tool = createAgentTool(registry, { provider: 'main', store: failingStore })
+		const manager = createToolManager()
+		manager.add(tool)
+		const result = await manager.execute({
+			id: 'call-1',
+			name: tool.name,
+			arguments: { task: 'x' },
+		})
+		expect(result.value).toBeUndefined()
+		expect(result.error).toContain('store unavailable')
+	})
+})
+
+// ── net-new: the three tools' advertised `summary` (agent 0.0.4 lean projection) ──
+
+describe('the workflow/workspace/agent tool factories advertise a `summary` alongside the full `description`', () => {
+	it('createWorkflowTool exposes the exact summary and keeps its full description', () => {
+		const tool = createWorkflowTool(simpleDefinition(), createWorkflowRunner())
+		expect(tool.summary).toBe(WORKFLOW_TOOL_SUMMARY)
+		expect(tool.description).toBe(WORKFLOW_TOOL_DESCRIPTION)
+	})
+
+	it('createWorkspaceTool exposes the exact summary and keeps its full description', () => {
+		const tool = createWorkspaceTool()
+		expect(tool.summary).toBe(WORKSPACE_TOOL_SUMMARY)
+		expect(tool.description).toBe(WORKSPACE_TOOL_DESCRIPTION)
+	})
+
+	it('createAgentTool exposes the exact summary and keeps its full description', () => {
+		const registry = createAgentRegistry({
+			providers: { main: createScriptedProvider([{ content: 'x' }]) },
+		})
+		const tool = createAgentTool(registry, { provider: 'main' })
+		expect(tool.summary).toBe(AGENT_TOOL_SUMMARY)
+		expect(tool.description).toBeDefined()
+	})
+
+	it('a real ToolManager`s definitions() advertise the summary while tool(name).description keeps the full text', () => {
+		const registry = createAgentRegistry({
+			providers: { main: createScriptedProvider([{ content: 'x' }]) },
+		})
+		const manager = createToolManager()
+		const workflowTool = createWorkflowTool(simpleDefinition(), createWorkflowRunner())
+		const workspaceTool = createWorkspaceTool()
+		const agentTool = createAgentTool(registry, { provider: 'main' })
+		manager.add([workflowTool, workspaceTool, agentTool])
+		const definitions = manager.definitions()
+		const byName = (name: string): (typeof definitions)[number] | undefined =>
+			definitions.find((definition) => definition.name === name)
+		expect(byName('workflow')?.description).toBe(WORKFLOW_TOOL_SUMMARY)
+		expect(byName('workspace')?.description).toBe(WORKSPACE_TOOL_SUMMARY)
+		expect(byName('agent')?.description).toBe(AGENT_TOOL_SUMMARY)
+		expect(manager.tool('workflow')?.description).toBe(WORKFLOW_TOOL_DESCRIPTION)
+		expect(manager.tool('workspace')?.description).toBe(WORKSPACE_TOOL_DESCRIPTION)
+	})
+})
+
+// ── net-new: createDescribeTool — full-description lookup by name ────────────
+
+describe('createDescribeTool — returns a registered tool`s full description', () => {
+	it('describes each of the three tools through a real ToolManager', async () => {
+		const registry = createAgentRegistry({
+			providers: { main: createScriptedProvider([{ content: 'x' }]) },
+		})
+		const manager = createToolManager()
+		const workflowTool = createWorkflowTool(simpleDefinition(), createWorkflowRunner())
+		const workspaceTool = createWorkspaceTool()
+		const agentTool = createAgentTool(registry, { provider: 'main' })
+		manager.add([workflowTool, workspaceTool, agentTool])
+		const describeTool = createDescribeTool(manager)
+		manager.add(describeTool)
+
+		expect(describeTool.name).toBe(DESCRIBE_TOOL_NAME)
+		expect(await describeTool.execute({ name: 'workflow' })).toBe(WORKFLOW_TOOL_DESCRIPTION)
+		expect(await describeTool.execute({ name: 'workspace' })).toBe(WORKSPACE_TOOL_DESCRIPTION)
+		expect(await describeTool.execute({ name: 'agent' })).toBe(agentTool.description)
+	})
+
+	it('an unknown tool name THROWS a typed TOOL AgentToolError via the manager`s error envelope', async () => {
+		const manager = createToolManager()
+		const describeTool = createDescribeTool(manager)
+		manager.add(describeTool)
+		const result = await manager.execute({
+			id: 'call-1',
+			name: DESCRIBE_TOOL_NAME,
+			arguments: { name: 'nonexistent' },
+		})
+		expect(result.value).toBeUndefined()
+		expect(result.error).toContain('nonexistent')
+
+		const direct = await rejectionOf(describeTool.execute({ name: 'nonexistent' }))
+		expect(isAgentToolError(direct) ? direct.code : undefined).toBe('TOOL')
+	})
+
+	it('malformed args (missing/empty name) are REJECTED with a typed TOOL AgentToolError', async () => {
+		const manager = createToolManager()
+		const describeTool = createDescribeTool(manager)
+		const missing = await rejectionOf(describeTool.execute({}))
+		expect(isAgentToolError(missing) ? missing.code : undefined).toBe('TOOL')
+		const empty = await rejectionOf(describeTool.execute({ name: '' }))
+		expect(isAgentToolError(empty) ? empty.code : undefined).toBe('TOOL')
 	})
 })

@@ -37,6 +37,16 @@ export const AGENT_TOOL_DEPTH = 8
  * the required `task` field, and documents the optional per-call `provider` / `tools` /
  * `system` overrides.
  */
+/**
+ * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createAgentTool}
+ * advertises in place of {@link AGENT_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
+ * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
+ * for the full teaching description; the full text stays retrievable via
+ * {@link import('./factories.js').createDescribeTool}.
+ */
+export const AGENT_TOOL_SUMMARY =
+	"Delegate a task to a sub-agent and return its result; each call runs one sub-agent turn to completion. Call describe('agent') for the optional provider/tools/system overrides."
+
 export const AGENT_TOOL_DESCRIPTION = [
 	'Delegate a task to a sub-agent and return its result. Every call runs ONE sub-agent turn to completion.',
 	'',
@@ -135,6 +145,16 @@ export const WORKFLOW_TOOL_NESTED_EXAMPLE: WorkflowDefinition = Object.freeze({
  * are the FLAT shape's schema; the nested form is the documented escape-hatch (the tool accepts
  * both).
  */
+/**
+ * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createWorkflowTool}
+ * advertises in place of {@link WORKFLOW_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
+ * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
+ * for the full teaching description; the full text stays retrievable via
+ * {@link import('./factories.js').createDescribeTool}.
+ */
+export const WORKFLOW_TOOL_SUMMARY =
+	"Author and run a multi-phase workflow in one call — phases run in sequence, tasks within a phase run concurrently. Call describe('workflow') for the full authoring schema and examples."
+
 export const WORKFLOW_TOOL_DESCRIPTION = [
 	'Author and run a workflow (phases run sequentially, the tasks within a phase run concurrently) in one call.',
 	'',
@@ -185,6 +205,16 @@ export const WORKSPACE_TOOL_EXAMPLE: WorkspaceOperation = Object.freeze({
  * their FLAT fields, gives a worked example for the common ones, and embeds
  * {@link WORKSPACE_TOOL_EXAMPLE} verbatim.
  */
+/**
+ * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createWorkspaceTool}
+ * advertises in place of {@link WORKSPACE_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
+ * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
+ * for the full teaching description; the full text stays retrievable via
+ * {@link import('./factories.js').createDescribeTool}.
+ */
+export const WORKSPACE_TOOL_SUMMARY =
+	"Read and edit files in a workspace — one operation per call (read, write, list, search, replace, splice, move, remove, plus workspace switching), chosen by the 'operation' field. Call describe('workspace') for the full operation list and fields."
+
 export const WORKSPACE_TOOL_DESCRIPTION = [
 	'Read and edit files in a workspace. Every call is ONE operation, chosen by the "operation" field.',
 	'All file operations act on the ACTIVE workspace; use "workspaces" then "switch" to move between workspaces.',
@@ -209,3 +239,32 @@ export const WORKSPACE_TOOL_DESCRIPTION = [
 	'Example — write a file:',
 	JSON.stringify(WORKSPACE_TOOL_EXAMPLE),
 ].join('\n')
+
+/**
+ * The name {@link import('./factories.js').createDescribeTool} advertises by default — the key a
+ * model calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ *
+ * @remarks
+ * Net-new: pairs with the other three tools' lean {@link AGENT_TOOL_SUMMARY} /
+ * {@link WORKFLOW_TOOL_SUMMARY} / {@link WORKSPACE_TOOL_SUMMARY} — a model that reads only the
+ * advertised summary can call `describe` with that tool's registered name to get its full
+ * teaching description back.
+ */
+export const DESCRIBE_TOOL_NAME = 'describe'
+
+/**
+ * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createDescribeTool}
+ * advertises — this tool needs no teaching of its own, so its summary and description are both
+ * short.
+ */
+export const DESCRIBE_TOOL_SUMMARY = 'Return the full description of a named registered tool.'
+
+/**
+ * The DESCRIPTION {@link import('./factories.js').createDescribeTool} advertises.
+ *
+ * @remarks
+ * Deliberately short — unlike the workflow / workspace / agent tools, this one has no authoring
+ * schema or multi-step protocol to teach.
+ */
+export const DESCRIBE_TOOL_DESCRIPTION =
+	'Return the full description of a registered tool by its name. Required: name - the registered tool name (see another tool listing for available names).'

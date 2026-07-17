@@ -2,7 +2,7 @@
 
 > Concrete, LLM-callable **tools** for the `@orkestrel` line — workflow authoring, workspace editing, and sub-agent delegation — over [`@orkestrel/agent`](agent.md)'s `ToolInterface` / `createTool` runtime, with pluggable stores. The runtime supplies the CALL SHAPE (`Tool`, `ToolManager`, the `{ id, name, value }` / `{ id, name, error }` envelope); this package supplies the CONCRETE BEHAVIOR — one factory per tool, each a `handler` that parses model-supplied args against a compiled [contract](contract.md), dispatches, and either returns a plain value or throws a typed error, exactly the shape the runtime's `ToolManagerInterface.execute` isolates.
 
-`createWorkflowTool` and `createWorkspaceTool` own their FULL handler logic (ported byte-faithfully from `@orkestrel/workflow` / `@orkestrel/agent` ahead of the upstream cleanup that drops the authoring surface from those packages — this package is now the defining home) and layer a pluggable `store` slot on top; `createAgentTool` is net-new — sub-agent delegation over an `AgentRegistryInterface`, deliberately storeless (persistence, if any, rides the registry's own configuration). The two workflow-function adapters `createToolFunction` / `createAgentFunction` compose a `@orkestrel/agent` tool or a live agent into a workflow's `functions` registry; the authoring umbrella (`WorkflowSteps` / `WorkflowDraft` shapes, `createWorkflowDraftContract`, `expandSteps` / `completeDraft`, `workflowToolSummary`, `MAX_WORKFLOW_DEPTH`) is what lets a small model author a whole tree in one call.
+`createWorkflowTool` and `createWorkspaceTool` own their FULL handler logic (ported byte-faithfully from `@orkestrel/workflow` / `@orkestrel/agent` ahead of the upstream cleanup that drops the authoring surface from those packages — this package is now the defining home) and layer a pluggable `store` slot on top; `createAgentTool` (sub-agent delegation over an `AgentRegistryInterface`) layers its OWN pluggable `store` slot too — a `ConversationStoreInterface` (`@orkestrel/agent`) that persists each delegation's sub-agent conversation on settle. All three tools, plus `createWorkspaceTool`, additionally advertise a lean `summary` (`@orkestrel/agent` 0.0.4's `ToolInterface.summary` / `ToolManagerInterface.definitions()` projection) in place of their full teaching `description`; `createDescribeTool` is the net-new on-demand expansion seam — given a registered tool's name, it returns that tool's full `description`. The two workflow-function adapters `createToolFunction` / `createAgentFunction` compose a `@orkestrel/agent` tool or a live agent into a workflow's `functions` registry; the authoring umbrella (`WorkflowSteps` / `WorkflowDraft` shapes, `createWorkflowDraftContract`, `expandSteps` / `completeDraft`, `workflowToolSummary`, `MAX_WORKFLOW_DEPTH`) is what lets a small model author a whole tree in one call.
 
 Source: [`src/core`](../../src/core). Surfaced through the `@src/core` barrel.
 
@@ -10,14 +10,15 @@ Source: [`src/core`](../../src/core). Surfaced through the `@src/core` barrel.
 
 ### Factories
 
-| API                           | Kind     | Summary                                                                                                                                                               |
-| ----------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createToolFunction`          | function | Wrap a registered tool as a `WorkflowFunction` — the OPT-IN adapter for a `function`-form task that runs a `@orkestrel/agent` tool BY NAME.                           |
-| `createAgentFunction`         | function | Wrap a live `AgentInterface` as a `WorkflowFunction`, folding the nested-workflow depth/cycle guard into its own closure.                                             |
-| `createWorkflowDraftContract` | function | Compile the LENIENT DRAFT `ContractInterface` — like the strict `createWorkflowContract` but `id`/`name` optional at all three levels.                                |
-| `createWorkflowTool`          | function | Wrap a `WorkflowDefinition` as an LLM-callable `ToolInterface` advertising the FLAT authoring shape, with an optional pluggable `WorkflowStoreInterface`.             |
-| `createWorkspaceTool`         | function | Build the 13-operation workspace-editing `ToolInterface`, driving a caller `WorkspaceManagerInterface` OR a manager built over a pluggable `WorkspaceStoreInterface`. |
-| `createAgentTool`             | function | Build the sub-agent delegation `ToolInterface` — resolves + runs one seeded agent via an `AgentRegistryInterface`, depth/cycle guarded.                               |
+| API                           | Kind     | Summary                                                                                                                                                                                          |
+| ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `createToolFunction`          | function | Wrap a registered tool as a `WorkflowFunction` — the OPT-IN adapter for a `function`-form task that runs a `@orkestrel/agent` tool BY NAME.                                                      |
+| `createAgentFunction`         | function | Wrap a live `AgentInterface` as a `WorkflowFunction`, folding the nested-workflow depth/cycle guard into its own closure.                                                                        |
+| `createWorkflowDraftContract` | function | Compile the LENIENT DRAFT `ContractInterface` — like the strict `createWorkflowContract` but `id`/`name` optional at all three levels.                                                           |
+| `createWorkflowTool`          | function | Wrap a `WorkflowDefinition` as an LLM-callable `ToolInterface` advertising the FLAT authoring shape, with an optional pluggable `WorkflowStoreInterface`.                                        |
+| `createWorkspaceTool`         | function | Build the 13-operation workspace-editing `ToolInterface`, driving a caller `WorkspaceManagerInterface` OR a manager built over a pluggable `WorkspaceStoreInterface`.                            |
+| `createAgentTool`             | function | Build the sub-agent delegation `ToolInterface` — resolves + runs one seeded agent via an `AgentRegistryInterface`, depth/cycle guarded, with an optional pluggable `ConversationStoreInterface`. |
+| `createDescribeTool`          | function | Build the `ToolInterface` that returns another registered tool's full `description` by name — the expansion seam for the other three tools' lean `summary`.                                      |
 
 ### Errors
 
@@ -53,6 +54,7 @@ The shape VALUES each `create*Tool` factory (and `createWorkflowDraftContract`) 
 | `stepShape`          | const | The flat STEP shape — `{ name }`, the building block of `workflowStepsShape`.                                                                      |
 | `workflowStepsShape` | const | The FLAT shape `createWorkflowTool` advertises as its `parameters` — `{ name?, steps: [{ name }] }`.                                               |
 | `workspaceToolShape` | const | The 13-arm `operation`-discriminated union `createWorkspaceTool` advertises as its `parameters`.                                                   |
+| `describeToolShape`  | const | The shape of `DescribeToolArguments` — `createDescribeTool`'s advertised `parameters` (`name` required).                                           |
 
 ### Constants
 
@@ -61,31 +63,38 @@ The shape VALUES each `create*Tool` factory (and `createWorkflowDraftContract`) 
 | `AGENT_TOOL_NAME`              | const | The name (`'agent'`) `createAgentTool` advertises by default.                                                                    |
 | `AGENT_TOOL_DEPTH`             | const | The maximum sub-agent delegation nesting depth (`8`) — deliberately a SEPARATE constant from `MAX_WORKFLOW_DEPTH`.               |
 | `AGENT_TOOL_DESCRIPTION`       | const | The multi-line description `createAgentTool` advertises — `task` required, `provider`/`tools`/`system` per-call overrides.       |
+| `AGENT_TOOL_SUMMARY`           | const | The lean one-sentence `summary` `createAgentTool` advertises in place of `AGENT_TOOL_DESCRIPTION` (`ToolInterface.summary`).     |
 | `MAX_WORKFLOW_DEPTH`           | const | The maximum nesting depth a workflow → agent → workflow chain may reach — owned here now (ported from `@orkestrel/workflow`).    |
 | `WORKFLOW_TOOL_NAME`           | const | The name (`'workflow'`) `createWorkflowTool` advertises by default, and the key `createAgentFunction` binds a nested tool under. |
 | `WORKFLOW_TOOL_FLAT_EXAMPLE`   | const | A complete FLAT authoring example (`{ name, steps: [{ name }] }`) embedded verbatim in `WORKFLOW_TOOL_DESCRIPTION`.              |
 | `WORKFLOW_TOOL_NESTED_EXAMPLE` | const | A minimal NESTED authoring example (a full `WorkflowDefinition`) — the advanced-form example in the description.                 |
 | `WORKFLOW_TOOL_DESCRIPTION`    | const | The multi-line description `createWorkflowTool` advertises — the flat form (primary) + the nested form (advanced).               |
+| `WORKFLOW_TOOL_SUMMARY`        | const | The lean one-sentence `summary` `createWorkflowTool` advertises in place of `WORKFLOW_TOOL_DESCRIPTION`.                         |
 | `WORKSPACE_TOOL_NAME`          | const | The name (`'workspace'`) `createWorkspaceTool` advertises by default.                                                            |
 | `WORKSPACE_TOOL_EXAMPLE`       | const | A valid `WorkspaceOperation` (a `'write'` op) embedded verbatim in `WORKSPACE_TOOL_DESCRIPTION`.                                 |
 | `WORKSPACE_TOOL_DESCRIPTION`   | const | The multi-line description `createWorkspaceTool` advertises — every operation's flat fields + a worked example.                  |
+| `WORKSPACE_TOOL_SUMMARY`       | const | The lean one-sentence `summary` `createWorkspaceTool` advertises in place of `WORKSPACE_TOOL_DESCRIPTION`.                       |
+| `DESCRIBE_TOOL_NAME`           | const | The name (`'describe'`) `createDescribeTool` advertises by default.                                                              |
+| `DESCRIBE_TOOL_SUMMARY`        | const | The lean one-sentence `summary` `createDescribeTool` advertises (short — this tool needs no teaching).                           |
+| `DESCRIBE_TOOL_DESCRIPTION`    | const | The short description `createDescribeTool` advertises — `name` required, returns the named tool's full description.              |
 
 ### Types
 
-| Type                   | Kind      | Shape                                                                                                                                                                                                                   |
-| ---------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TaskDraft`            | interface | `{ id?, name?, description?, run?, retries?, timeout? }` — a `TaskDefinition` (`@orkestrel/workflow`) with OPTIONAL id/name.                                                                                            |
-| `PhaseDraft`           | interface | `{ id?, name?, description?, tasks, concurrency?, bail? }` — a `PhaseDefinition` with OPTIONAL id/name + `TaskDraft` tasks.                                                                                             |
-| `WorkflowDraft`        | interface | `{ id?, name?, description?, phases, bail? }` — a `WorkflowDefinition` with OPTIONAL id/name at all three levels.                                                                                                       |
-| `WorkflowStep`         | interface | `{ name }` — one flat step; `name` is a REGISTERED behavior name (becomes the task's `run`, not a human label).                                                                                                         |
-| `WorkflowSteps`        | interface | `{ name?, steps }` — the FLAT authoring blob `createWorkflowTool` advertises; each step → a one-task phase via `expandSteps`.                                                                                           |
-| `AgentFunctionOptions` | interface | `{ runner?, depth?, ancestry? }` — options for `createAgentFunction`: the OPT-IN nested-workflow-tool binding + depth/cycle bookkeeping.                                                                                |
-| `WorkflowToolOptions`  | interface | `{ depth?, ancestry?, store? }` — the depth + ancestry a nested run is bound at, plus the optional durable `WorkflowStoreInterface`.                                                                                    |
-| `WorkspaceToolOptions` | interface | `{ name?, description?, manager?, store? }` — a caller-built `WorkspaceManagerInterface` to drive directly, OR a `WorkspaceStoreInterface` to build one over.                                                           |
-| `WorkspaceOperation`   | type      | The 13-arm `operation`-discriminated union `createWorkspaceTool` dispatches — `read` / `list` / `has` / `search` / `replace` / `write` / `splice` / `prepend` / `append` / `move` / `remove` / `workspaces` / `switch`. |
-| `AgentToolOptions`     | interface | `{ name?, description?, provider?, tools?, system?, depth?, ancestry? }` — `createAgentTool`'s delegation defaults + nesting bookkeeping.                                                                               |
-| `AgentToolArguments`   | interface | `{ task, provider?, tools?, system? }` — the flat call args `createAgentTool` accepts.                                                                                                                                  |
-| `AgentToolErrorCode`   | type      | `'TOOL' \| 'DEPTH'` — the machine-readable code an `AgentToolError` carries.                                                                                                                                            |
+| Type                    | Kind      | Shape                                                                                                                                                                                                                   |
+| ----------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TaskDraft`             | interface | `{ id?, name?, description?, run?, retries?, timeout? }` — a `TaskDefinition` (`@orkestrel/workflow`) with OPTIONAL id/name.                                                                                            |
+| `PhaseDraft`            | interface | `{ id?, name?, description?, tasks, concurrency?, bail? }` — a `PhaseDefinition` with OPTIONAL id/name + `TaskDraft` tasks.                                                                                             |
+| `WorkflowDraft`         | interface | `{ id?, name?, description?, phases, bail? }` — a `WorkflowDefinition` with OPTIONAL id/name at all three levels.                                                                                                       |
+| `WorkflowStep`          | interface | `{ name }` — one flat step; `name` is a REGISTERED behavior name (becomes the task's `run`, not a human label).                                                                                                         |
+| `WorkflowSteps`         | interface | `{ name?, steps }` — the FLAT authoring blob `createWorkflowTool` advertises; each step → a one-task phase via `expandSteps`.                                                                                           |
+| `AgentFunctionOptions`  | interface | `{ runner?, depth?, ancestry? }` — options for `createAgentFunction`: the OPT-IN nested-workflow-tool binding + depth/cycle bookkeeping.                                                                                |
+| `WorkflowToolOptions`   | interface | `{ depth?, ancestry?, store? }` — the depth + ancestry a nested run is bound at, plus the optional durable `WorkflowStoreInterface`.                                                                                    |
+| `WorkspaceToolOptions`  | interface | `{ name?, description?, manager?, store? }` — a caller-built `WorkspaceManagerInterface` to drive directly, OR a `WorkspaceStoreInterface` to build one over.                                                           |
+| `WorkspaceOperation`    | type      | The 13-arm `operation`-discriminated union `createWorkspaceTool` dispatches — `read` / `list` / `has` / `search` / `replace` / `write` / `splice` / `prepend` / `append` / `move` / `remove` / `workspaces` / `switch`. |
+| `AgentToolOptions`      | interface | `{ name?, description?, provider?, tools?, system?, depth?, ancestry?, store? }` — `createAgentTool`'s delegation defaults, nesting bookkeeping, and optional `ConversationStoreInterface`.                             |
+| `AgentToolArguments`    | interface | `{ task, provider?, tools?, system? }` — the flat call args `createAgentTool` accepts.                                                                                                                                  |
+| `AgentToolErrorCode`    | type      | `'TOOL' \| 'DEPTH'` — the machine-readable code an `AgentToolError` carries.                                                                                                                                            |
+| `DescribeToolArguments` | interface | `{ name }` — the flat call args `createDescribeTool` accepts (the registered tool name to describe).                                                                                                                    |
 
 ## Methods
 
@@ -109,15 +118,17 @@ These invariants hold across `src/core` ↔ `tool.md`:
 
 7. **`createWorkspaceTool` is manager-driven, with a no-active ergonomic seam.** `options.manager` (drive directly) takes priority over `options.store` (build a fresh manager over it via `@orkestrel/agent`'s `createWorkspaceManager`); neither given constructs a manager over `@orkestrel/agent`'s in-memory default. NOTE the deliberate `store` divergence from invariant 6: the workspace tool's `store` only BACKS the constructed manager's `open` / `save` — the tool's edits are NOT auto-persisted (durability requires an explicit caller `save`), whereas the workflow tool's `store` persists each executed snapshot on settle. Every edit / read arm targets `manager.active` — never a specific workspace by id directly — so a host repoints which workspace the model edits via the two REGISTRY arms (`workspaces` lists them, `switch` re-points `active`, lenient on an unknown id). A WRITING arm (write / splice / prepend / append / move / remove / replace) run with no active workspace AUTO-CREATES + activates one (`manager.add()`); a pure-READ arm (read / list / has / search) against no active workspace returns the EMPTY result, never creating one.
 
-8. **`createAgentTool` is deliberately storeless.** Unlike the workflow / workspace tools, `AgentToolOptions` carries NO `store` slot: `AgentRegistryInterface.build` (`@orkestrel/agent`) accepts only an `AgentJobInput` + an optional cancel `signal` — there is no public seam to thread a `ConversationStoreInterface` through one delegated build call. Persistence for a delegated sub-agent, if any, rides the CALLER'S registry configuration (a registry-level store already covers every agent it builds, including ones built through this tool) — this package adds no persistence concern of its own for delegation.
+8. **`createAgentTool` carries its own `store` slot, composable with a registry-level store.** `AgentToolOptions.store` is an optional `ConversationStoreInterface` (`@orkestrel/agent`): when supplied, the handler `await`s `store.set(agent.context.conversations.active.snapshot())` once `agent.generate()` SETTLES SUCCESSFULLY, before returning — one snapshot PER delegation (each `registry.build` mints a fresh conversation id via its seeded `add`, so a shared store never collides, it accumulates one snapshot per delegated call). A `store.set` failure PROPAGATES as the tool call's own failure (isolated by `ToolManagerInterface` into the canonical `error`, per invariant 2) — persistence is not best-effort. Omitted, the handler persists nothing from this tool. This composes with, and is independent of, `AgentRegistryOptions.store` (`@orkestrel/agent` 0.0.4): a registry built with its OWN `store` backs EVERY agent it builds with a store-backed `ConversationManagerInterface`, including ones built through this tool — a caller may use either seam alone or both together.
 
 9. **A delegated sub-agent's lifecycle is a single `generate()` call.** `createAgentTool`'s handler resolves a live agent via `registry.build`, awaits ONE `agent.generate()`, and returns its settled `content` — `AgentInterface` (`@orkestrel/agent`) exposes no teardown method, so there is nothing to release afterwards; the agent's state lives entirely in the resolved `AgentContextInterface`, owned by the caller's registry.
 
 10. **Provider-agnostic delegation.** `createAgentTool` never imports or references a concrete `ProviderInterface` implementation — `options.provider` / a per-call `call.provider` is a REGISTRY KEY resolved by `registry.build`, so swapping the provider behind that key changes nothing about the tool. A missing / unresolvable provider (neither the call nor the tool's own default supplies one) THROWS a `TOOL` `AgentToolError` before any agent is built.
 
-11. **`AgentToolError` mirrors `WorkflowError`'s exact shape, kept distinct per package.** It carries a machine-readable `code` (`AgentToolErrorCode` — `TOOL` / `DEPTH`) + an optional `context` bag, thrown on every `createAgentTool` failure path — never a `{ error }` return (AGENTS §14). `@orkestrel/workflow`'s `WorkflowError` and `@orkestrel/agent`'s `WorkspaceError` already cover the workflow tool's and workspace tool's failure paths respectively and are thrown as-is, never duplicated.
+11. **`AgentToolError` mirrors `WorkflowError`'s exact shape, kept distinct per package, and is this package's general tool-call error.** It carries a machine-readable `code` (`AgentToolErrorCode` — `TOOL` / `DEPTH`) + an optional `context` bag, thrown on every `createAgentTool` AND `createDescribeTool` failure path — never a `{ error }` return (AGENTS §14). It is NOT scoped to agent delegation alone: `createDescribeTool` reuses it (`TOOL`) for a malformed call or an unknown tool name, since that is the same "tool-level misuse" semantic `TOOL` already carries — no second error class was minted for it. `@orkestrel/workflow`'s `WorkflowError` and `@orkestrel/agent`'s `WorkspaceError` already cover the workflow tool's and workspace tool's failure paths respectively and are thrown as-is, never duplicated.
 
 12. **The workflow-function adapters are OPT-IN, composed into the caller's own registry.** `createToolFunction(tools, name)` and `createAgentFunction(agent, options?)` each return a plain `WorkflowFunction` (`@orkestrel/workflow`) — the pure `WorkflowRunner` engine carries no knowledge of tools or agents itself; a caller composes either adapter into its own `WorkflowOptions.functions` registry like any other behavior (`{ publish: createToolFunction(tools, 'publish') }`). `createToolFunction`'s wrapped `ToolManagerInterface.execute` never throws (a handler throw is isolated into `result.error`), so the adapter RE-THROWS a plain `Error` carrying that message as `cause` when `result.error` is set — surfacing it as a task failure that honours `bail`. `createAgentFunction` folds the task's cancellation into the wrapped agent's run (an already-aborted `controller.signal` cancels up front; otherwise a one-shot listener fires `agent.abort` on the task's own cancellation) and, when `options.runner` is supplied, BINDS a depth/cycle-aware `createWorkflowTool` onto the agent's `context.tools` under `WORKFLOW_TOOL_NAME` — the propagation seam letting the wrapped agent author + run a NESTED workflow.
+
+13. **The lean `summary` / full `description` split, and `createDescribeTool`'s expansion seam.** `createWorkflowTool`, `createWorkspaceTool`, and `createAgentTool` each set `ToolInterface.summary` (`@orkestrel/agent` 0.0.4) to a frozen one-sentence constant (`WORKFLOW_TOOL_SUMMARY` / `WORKSPACE_TOOL_SUMMARY` / `AGENT_TOOL_SUMMARY`) alongside their unchanged full teaching `description`; `ToolManagerInterface.definitions()` advertises `summary ?? description`, so a model sees the lean text by default. `createDescribeTool(tools)` is the on-demand expansion: given a registered `name`, it looks the tool up via `tools.tool(name)` and returns its full `tool.description` (falling back to `tool.summary`, then a placeholder, when a tool has neither) — never truncated, never re-derived. Each summary's text points the model at `describe('<name>')` for the full schema.
 
 ## Patterns
 
@@ -215,6 +226,58 @@ const result = await tools.execute({
 result.value // the sub-agent's settled `AgentResult.content`
 ```
 
+### Persisting a delegation's conversation via the agent tool's own `store` slot
+
+```ts
+import { createAgentTool } from '@src/core'
+import {
+	createAgentRegistry,
+	createMemoryConversationStore,
+	createToolManager,
+} from '@orkestrel/agent'
+
+declare const registry: ReturnType<typeof createAgentRegistry> // seeded with a `providers` pool
+
+const store = createMemoryConversationStore()
+const tool = createAgentTool(registry, { provider: 'openai', store }) // persists each delegation
+
+const tools = createToolManager()
+tools.add(tool)
+
+await tools.execute({
+	id: 'delegate-1',
+	name: 'agent',
+	arguments: { task: 'Summarize the attached notes in three bullet points.' },
+})
+// The delegated sub-agent's conversation snapshot now lives in `store` — one entry per
+// delegation (a fresh conversation id per `registry.build`, so concurrent calls never collide).
+```
+
+### Lean advertisement + on-demand expansion via `createDescribeTool`
+
+```ts
+import { createDescribeTool, createWorkflowTool, createWorkspaceTool } from '@src/core'
+import { createToolManager } from '@orkestrel/agent'
+import { createWorkflowRunner } from '@orkestrel/workflow'
+import type { WorkflowDefinition } from '@orkestrel/workflow'
+
+const definition: WorkflowDefinition = { id: 'release', name: 'Release', phases: [] }
+const tools = createToolManager()
+tools.add(createWorkflowTool(definition, createWorkflowRunner()))
+tools.add(createWorkspaceTool())
+tools.add(createDescribeTool(tools)) // the tool describes the SAME manager it is registered on
+
+tools.definitions().map((entry) => entry.description)
+// each entry is the LEAN summary (e.g. "Author and run a multi-phase workflow in one call — …")
+
+const full = await tools.execute({
+	id: 'd1',
+	name: 'describe',
+	arguments: { name: 'workflow' },
+})
+full.value // the workflow tool's FULL multi-line teaching description
+```
+
 ### Composing `createToolFunction` / `createAgentFunction` into a workflow's `functions` registry
 
 ```ts
@@ -288,7 +351,7 @@ try {
 ## Tests
 
 - [`tests/guides/src/parity.test.ts`](../../tests/guides/src/parity.test.ts) — the `## Surface` ↔ `src/core` bijection (value + type exports), and this guide's `## Patterns` fences resolving to real exports with resolving imports.
-- [`tests/src/core/factories.test.ts`](../../tests/src/core/factories.test.ts) — every factory returning a working instance / value: `createToolFunction` running a registered tool and re-throwing a failing tool's error with the original message as `cause`; `createAgentFunction` running a live (scripted) agent, folding task cancellation into `agent.abort`, and — when `options.runner` is supplied — binding a depth/cycle-aware `createWorkflowTool` onto the agent's `context.tools` under `WORKFLOW_TOOL_NAME`, plus its own `DEPTH` guard rejecting an over-deep / cyclic call before running the agent; `createWorkflowDraftContract` round-tripping a lenient draft (`id`/`name` optional, an explicit empty `id` still rejected); `createWorkflowTool` end to end through a REAL `createToolManager` — the flat shape, an ids-omitted draft, and the full nested form all converging on `{ status, count }`, a malformed blob throwing `TOOL`, an over-deep / cyclic nested run throwing `DEPTH`, and (with `options.store` supplied) the settled run's snapshot landing in the store; `createWorkspaceTool` driven both `manager`-first and `store`-first, one case per operation arm (incl. the no-active auto-create / empty-read rule and the `workspaces` / `switch` registry arms), and its `WorkspaceError` propagation (`MODALITY` / `PATTERN` / `RANGE` uncaught, `TOOL` on a malformed op); `createAgentTool` resolving a seeded sub-agent via a (scripted) `AgentRegistryInterface`, returning its settled content, its `TOOL` failure paths (malformed call, unresolved provider), and its `DEPTH` guard (over-depth, a cyclic re-entrant provider).
+- [`tests/src/core/factories.test.ts`](../../tests/src/core/factories.test.ts) — every factory returning a working instance / value: `createToolFunction` running a registered tool and re-throwing a failing tool's error with the original message as `cause`; `createAgentFunction` running a live (scripted) agent, folding task cancellation into `agent.abort`, and — when `options.runner` is supplied — binding a depth/cycle-aware `createWorkflowTool` onto the agent's `context.tools` under `WORKFLOW_TOOL_NAME`, plus its own `DEPTH` guard rejecting an over-deep / cyclic call before running the agent; `createWorkflowDraftContract` round-tripping a lenient draft (`id`/`name` optional, an explicit empty `id` still rejected); `createWorkflowTool` end to end through a REAL `createToolManager` — the flat shape, an ids-omitted draft, and the full nested form all converging on `{ status, count }`, a malformed blob throwing `TOOL`, an over-deep / cyclic nested run throwing `DEPTH`, and (with `options.store` supplied) the settled run's snapshot landing in the store; `createWorkspaceTool` driven both `manager`-first and `store`-first, one case per operation arm (incl. the no-active auto-create / empty-read rule and the `workspaces` / `switch` registry arms), and its `WorkspaceError` propagation (`MODALITY` / `PATTERN` / `RANGE` uncaught, `TOOL` on a malformed op); `createAgentTool` resolving a seeded sub-agent via a (scripted) `AgentRegistryInterface`, returning its settled content, its `TOOL` failure paths (malformed call, unresolved provider), its `DEPTH` guard (over-depth, a cyclic re-entrant provider), and — net-new — its optional `store` slot: a successful delegation persisting the sub-agent's conversation snapshot, two delegations persisting two distinct snapshots, the storeless path unchanged, and a `store.set` failure surfacing as the tool call's own failure via the manager's error envelope; the three tools' advertised `summary` (exact text, alongside an unchanged full `description`) and a real `ToolManager.definitions()` advertising the summary while `tool(name).description` keeps the full text; `createDescribeTool` returning each of the three tools' full description through a real `ToolManager`, an unknown name throwing a typed `TOOL` `AgentToolError` (via both a direct call and the manager's error envelope), and malformed args (missing/empty `name`) rejected.
 - [`tests/src/core/helpers.test.ts`](../../tests/src/core/helpers.test.ts) — `workflowTag` / `agentTag`'s namespaced tags; `workflowToolSummary`'s plain `{ status, count }` reduction; the lenient-authoring synthesis `completeDraft` / `completePhaseDraft` / `completeTaskDraft` (positional ids, name defaulting to id, a provided id/name preserved, per-phase `bail` + per-task `retries`/`timeout` carried over) and `expandSteps` (one one-task phase per step, a step's `name` → the task's `run`), each yielding a tree the STRICT `createWorkflowContract` accepts.
 - [`tests/src/core/shapers.test.ts`](../../tests/src/core/shapers.test.ts) — `agentToolShape` agreeing with `AgentToolArguments` (`task` required, `provider`/`tools`/`system` optional); the draft shapes (`workflowDraftShape` / `phaseDraftShape` / `taskDraftShape`); `stepShape` / `workflowStepsShape`; and `workspaceToolShape` accepting a valid sample of each of the 13 operation arms and rejecting malformed input.
 - [`tests/src/core/errors.test.ts`](../../tests/src/core/errors.test.ts) — `AgentToolError` carrying its `code` + optional `context`, and `isAgentToolError` narrowing a caught value (accepting a real instance, rejecting a plain `Error` / non-error value).

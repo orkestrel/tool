@@ -33,11 +33,17 @@ import {
 	AGENT_TOOL_DEPTH,
 	AGENT_TOOL_DESCRIPTION,
 	AGENT_TOOL_NAME,
+	AGENT_TOOL_SUMMARY,
+	DESCRIBE_TOOL_DESCRIPTION,
+	DESCRIBE_TOOL_NAME,
+	DESCRIBE_TOOL_SUMMARY,
 	MAX_WORKFLOW_DEPTH,
 	WORKFLOW_TOOL_DESCRIPTION,
 	WORKFLOW_TOOL_NAME,
+	WORKFLOW_TOOL_SUMMARY,
 	WORKSPACE_TOOL_DESCRIPTION,
 	WORKSPACE_TOOL_NAME,
+	WORKSPACE_TOOL_SUMMARY,
 } from './constants.js'
 import { AgentToolError } from './errors.js'
 import {
@@ -49,6 +55,7 @@ import {
 } from './helpers.js'
 import {
 	agentToolShape,
+	describeToolShape,
 	workflowDraftShape,
 	workflowStepsShape,
 	workspaceToolShape,
@@ -312,6 +319,7 @@ export function createWorkflowTool(
 	return createTool({
 		name: WORKFLOW_TOOL_NAME,
 		description: WORKFLOW_TOOL_DESCRIPTION,
+		summary: WORKFLOW_TOOL_SUMMARY,
 		parameters,
 		execute: async (args) => {
 			// Branch on the authored args' SHAPE (no ambient context — a tool handler gets only
@@ -418,6 +426,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 	return createTool({
 		name: options?.name ?? WORKSPACE_TOOL_NAME,
 		description: options?.description ?? WORKSPACE_TOOL_DESCRIPTION,
+		summary: WORKSPACE_TOOL_SUMMARY,
 		parameters,
 		execute: (args) => {
 			const op = contract.parse(args)
@@ -555,6 +564,7 @@ export function createAgentTool(
 	return createTool({
 		name: options?.name ?? AGENT_TOOL_NAME,
 		description: options?.description ?? AGENT_TOOL_DESCRIPTION,
+		summary: AGENT_TOOL_SUMMARY,
 		parameters,
 		execute: async (args) => {
 			const call = contract.parse(args)
@@ -594,7 +604,67 @@ export function createAgentTool(
 				...(tools === undefined ? {} : { tools }),
 			})
 			const result = await agent.generate()
+			if (options?.store !== undefined) {
+				const active = agent.context.conversations.active
+				if (active !== undefined) await options.store.set(active.snapshot())
+			}
 			return result.content
+		},
+	})
+}
+
+/**
+ * Build an LLM-callable tool that returns the FULL `description` of another registered tool by
+ * name — the counterpart to the lean `summary` the other tools in this package advertise
+ * (`AGENT_TOOL_SUMMARY` / `WORKFLOW_TOOL_SUMMARY` / `WORKSPACE_TOOL_SUMMARY`).
+ *
+ * @remarks
+ * `ToolManagerInterface.definitions()` (`@orkestrel/agent`) advertises `tool.summary ??
+ * tool.description` — a lean one-sentence summary stands in for a tool's full teaching
+ * description when `summary` is set, keeping the advertised tool list compact for a small model.
+ * This tool is the on-demand expansion seam: given a registered tool's `name`, it looks the tool
+ * up via `tools.tool(name)` and returns its full `description` (falling back to `summary` when a
+ * tool has no `description` of its own, then a placeholder when it has neither).
+ *
+ * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * {@link import('./shapers.js').describeToolShape}, RETURNS the plain description string on
+ * success, THROWS a typed `TOOL` {@link import('./errors.js').AgentToolError} on a malformed call
+ * or an unknown tool name.
+ *
+ * @param tools - The `ToolManagerInterface` (`@orkestrel/agent`) whose registered tools this
+ *   tool can describe
+ * @returns A `ToolInterface` (named {@link import('./constants.js').DESCRIBE_TOOL_NAME})
+ *
+ * @example
+ * ```ts
+ * import { createDescribeTool, createWorkflowTool } from '@src/core'
+ * import { createToolManager } from '@orkestrel/agent'
+ *
+ * const tools = createToolManager()
+ * tools.add(createWorkflowTool(definition, runner))
+ * tools.add(createDescribeTool(tools))
+ * const full = await tools.execute({ id: '1', name: 'describe', arguments: { name: 'workflow' } })
+ * full.value // the workflow tool's full teaching description
+ * ```
+ */
+export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
+	const contract = createContract(describeToolShape)
+	const parameters = schemaToParameters(contract.schema)
+	return createTool({
+		name: DESCRIBE_TOOL_NAME,
+		description: DESCRIBE_TOOL_DESCRIPTION,
+		summary: DESCRIBE_TOOL_SUMMARY,
+		parameters,
+		execute: async (args) => {
+			const call = contract.parse(args)
+			if (call === undefined) {
+				throw new AgentToolError('TOOL', 'malformed describe call', { args })
+			}
+			const tool = tools.tool(call.name)
+			if (tool === undefined) {
+				throw new AgentToolError('TOOL', `unknown tool '${call.name}'`, { name: call.name })
+			}
+			return tool.description ?? tool.summary ?? '<no description>'
 		},
 	})
 }

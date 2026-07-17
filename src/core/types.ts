@@ -1,4 +1,8 @@
-import type { WorkspaceManagerInterface, WorkspaceStoreInterface } from '@orkestrel/agent'
+import type {
+	ConversationStoreInterface,
+	WorkspaceManagerInterface,
+	WorkspaceStoreInterface,
+} from '@orkestrel/agent'
 import type { WorkflowRunnerInterface, WorkflowStoreInterface } from '@orkestrel/workflow'
 
 // Tool-package types — one interface per `create*Tool` / `create*Function` factory (AGENTS §5:
@@ -288,13 +292,17 @@ export type WorkspaceOperation =
  * - `ancestry` — the sub-agent identifiers already in this delegation chain (default empty); a
  *   cycle (the resolved agent already present) is rejected with a typed `DEPTH`
  *   {@link import('./errors.js').AgentToolError}.
+ * - `store` — this package's ADDITION: when supplied, the handler persists the delegated
+ *   sub-agent's active conversation snapshot (`store.set(agent.context.conversations.active.snapshot())`)
+ *   once `agent.generate()` settles successfully, before returning — one snapshot per delegation
+ *   (each `registry.build` mints a fresh conversation id, so a shared store accumulates an
+ *   audit log rather than colliding). Omitted ⇒ no persistence from this tool.
  *
- * Conversation persistence for a delegated sub-agent rides the `AgentRegistryInterface`'s OWN
- * configuration (`@orkestrel/agent`), not this tool: `AgentRegistryInterface.build` accepts only
- * an `AgentJobInput` + an optional cancel `signal` — there is no public seam to thread a
- * `ConversationStoreInterface` (`@orkestrel/agent`) through a single delegated build call. A
- * registry-level store, if the caller's registry is configured with one, already covers every
- * agent it builds, including ones built through this tool.
+ * Conversation persistence for a delegated sub-agent has TWO independent seams, composable
+ * together: this `store` slot persists EACH delegation's conversation individually, and/or an
+ * `AgentRegistryInterface` built with `AgentRegistryOptions.store` (`@orkestrel/agent`) backs
+ * EVERY agent it builds — including ones built through this tool — with a store-backed
+ * `ConversationManagerInterface` of its own. Neither is required; either or both may be used.
  */
 export interface AgentToolOptions {
 	readonly name?: string
@@ -304,6 +312,7 @@ export interface AgentToolOptions {
 	readonly system?: string
 	readonly depth?: number
 	readonly ancestry?: readonly string[]
+	readonly store?: ConversationStoreInterface
 }
 
 /**
@@ -335,3 +344,15 @@ export interface AgentToolArguments {
  * the resolved agent is already an ancestor (a cycle).
  */
 export type AgentToolErrorCode = 'TOOL' | 'DEPTH'
+
+/**
+ * The FLAT args {@link import('./factories.js').createDescribeTool} accepts — the registered
+ * tool `name` whose full `description` a model wants back.
+ *
+ * @remarks
+ * `name` must match a tool registered on the {@link import('@orkestrel/agent').ToolManagerInterface}
+ * the describe tool was built over — it is looked up via `tools.tool(name)`.
+ */
+export interface DescribeToolArguments {
+	readonly name: string
+}
