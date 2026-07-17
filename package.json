@@ -63,9 +63,9 @@
 		"prepublishOnly": "npm run format:check && npm run lint:check && npm run check && npm run check:src && npm run build && npm test"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.3",
+		"@orkestrel/agent": "^0.0.4",
 		"@orkestrel/contract": "^0.0.1",
-		"@orkestrel/workflow": "^0.0.2"
+		"@orkestrel/workflow": "^0.0.3"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.58.9",

@@ -8,11 +8,11 @@ Read the module as five layers of one substrate, top to bottom:
 - **The entities control.** The live **entity** family (`Workflow` / `Phase` / `Task`) is the runtime mirror BUILT from a definition: each node is an [§13-observable](emitter.md) synchronous state machine whose status is DERIVED from its children, mutable through its own `add` / `remove` / `move` / `update`, pausable, and snapshot-able at any instant.
 - **The engine drives.** The `WorkflowRunner` is a PURE engine that walks the live tree — phases sequentially, each phase's tasks concurrently — COMPOSING the substrate rather than re-implementing status / concurrency / retries / abort, under a `bail` failure policy: `false` (graceful, the default) records each leaf failure as data and finishes every phase; `true` (the database-transaction halt) aborts the in-flight siblings on the first failure and skips the rest.
 - **The substrate executes.** Underneath sit the shipped primitives the engine composes: the `Scheduler` paces the host between work, the queue-backed `Runner` bounds and drives a set of units, and a `Controller` is the per-unit handle a handler receives. The engine folds [abort](abort.md) / [timeout](timeout.md) / [budget](budget.md) through this same substrate.
-- **The consumer supplies behavior.** A task's `run` is a PLAIN STRING naming a behavior in the `WorkflowOptions.functions` registry — resolved ONCE at construction into the task's `handler` (a `WorkflowFunction`); the engine dispatches by invoking `task.handler` directly, carrying no registry or tool/agent knowledge of its own. Wiring a task to a tool or an agent is OPT-IN through the adapter factories `createToolFunction` / `createAgentFunction`, composed into the caller's own `functions` registry — the depth + cycle guard against runaway `agent` → workflow-tool → workflow recursion lives in those closures, not the engine.
+- **The consumer supplies behavior.** A task's `run` is a PLAIN STRING naming a behavior in the `WorkflowOptions.functions` registry — resolved ONCE at construction into the task's `handler` (a `WorkflowFunction`); the engine dispatches by invoking `task.handler` directly, carrying no registry or tool/agent knowledge of its own. Wiring a task to a tool or an agent is OPT-IN through the `@orkestrel/tool` package's adapter factories, composed into the caller's own `functions` registry — the depth + cycle guard against runaway `agent` → workflow-tool → workflow recursion lives in those closures, not the engine.
 
 **Determinism is fixed by design, not configured: tasks within a phase run concurrently; phases run sequentially.** A dependency is expressed STRUCTURALLY — a task that needs another's output goes in a later phase — so the same tree always sequences the same way and there is no DAG to misconfigure. The only per-phase knob is an optional `concurrency` throttle (max-in-flight), never a sequencing control.
 
-`createWorkflowTool` wraps a whole definition as one LLM-callable tool that ADVERTISES a deliberately-simple FLAT authoring shape (`{ name?, steps: [{ name }] }`) so even a small model can author a complete tree in one call — every authored form (flat, an ids-omitted draft, or the full nested definition) is widened ONLY at the tool boundary and re-validated against the STRICT `createWorkflowContract` before running, so the canonical contract and engine stay byte-for-byte unchanged.
+Workflow keeps ALL runtime/engine surface — the definition contract, the live entity tree, the PURE runner, and the durable store. The authoring-tool / adapter layer (wrapping a definition as an LLM-callable tool, wrapping a registered tool or a live agent as a `WorkflowFunction`) has moved to the `@orkestrel/tool` package, which depends on this one; see its guide for that surface.
 
 Source: [`src/core`](../../src/core). Surfaced through the `@src/core` barrel.
 
@@ -21,9 +21,8 @@ Source: [`src/core`](../../src/core). Surfaced through the `@src/core` barrel.
 The 80% use case is two steps: author a `WorkflowDefinition` (pure JSON — phases in order, each phase's tasks concurrent, each task naming a registered behavior), then run it through a `WorkflowRunner` that builds the live tree and drives it to a `WorkflowResult`:
 
 ```ts
-import { createToolFunction, createWorkflowRunner } from '@src/core'
+import { createWorkflowRunner } from '@src/core'
 import type { WorkflowDefinition } from '@src/core'
-import { createToolManager } from '@orkestrel/agent'
 
 const definition: WorkflowDefinition = {
 	id: 'release',
@@ -45,14 +44,13 @@ const definition: WorkflowDefinition = {
 	],
 }
 
-const tools = createToolManager() // a `publish` tool lives here
 const runner = createWorkflowRunner() // a PURE engine — no registries
 
 const result = await runner.execute(definition, {
 	functions: {
 		compile: async (controller) => `built ${controller.task.id}`,
 		lint: async () => 'clean',
-		publish: createToolFunction(tools, 'publish'), // OPT-IN tool adapter
+		publish: async () => 'published', // or an OPT-IN adapter from `@orkestrel/tool`
 	},
 })
 result.status // 'completed'
@@ -64,22 +62,18 @@ Why this is safe: the definition is the SINGLE source of truth. `execute` builds
 
 ### Factories
 
-| API                           | Kind     | Summary                                                                                                                                        |
-| ----------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createWorkflowContract`      | function | Compile the workflow-definition `ContractInterface` — JSON Schema + guard + parser + seeded generator, all from one shape.                     |
-| `createWorkflowDraftContract` | function | Compile the LENIENT DRAFT `ContractInterface` — like the strict one but `id`/`name` optional at all three levels.                              |
-| `createWorkflow`              | function | Build the live `WorkflowInterface` entity tree from a `WorkflowDefinition` (every node `pending`).                                             |
-| `restoreWorkflow`             | function | Rebuild an equivalent live tree from a `WorkflowSnapshot` — the inverse of `snapshot()` (structure + status + results + order).                |
-| `assertSnapshot`              | function | Validate a `WorkflowSnapshot`'s `bail` + every node's status / override against the lifecycle vocabulary (throws `RESTORE`).                   |
-| `createMemoryWorkflowStore`   | function | Create the in-memory default `WorkflowStoreInterface` — persists `WorkflowSnapshot`s by id (the durable-store seam; no TTL, no options).       |
-| `createDatabaseWorkflowStore` | function | Create the driver-pluggable `WorkflowStoreInterface` over a `databases` table (the snapshot as one JSON column; driver defaults to memory).    |
-| `createWorkflowRunner`        | function | Create a PURE `WorkflowRunnerInterface` engine over an optional `scheduler` — no registries, no tool/agent knowledge.                          |
-| `createToolFunction`          | function | Wrap a registered tool as a `WorkflowFunction` — the OPT-IN adapter for a `function`-form task that runs a tool BY NAME.                       |
-| `createAgentFunction`         | function | Wrap a live `AgentInterface` as a `WorkflowFunction` — the OPT-IN adapter that runs the agent, folding the depth/cycle guard into its closure. |
-| `createWorkflowTool`          | function | Wrap a `WorkflowDefinition` as an LLM-callable `ToolInterface` that advertises the FLAT authoring shape (the nested form stays accepted).      |
-| `createScheduler`             | function | Create the cross-environment `setTimeout`-based default `SchedulerInterface`.                                                                  |
-| `createRunner`                | function | Create a `RunnerInterface` over a handler — drives a `Queue`, ordered + fail-fast `execute`.                                                   |
-| `createDeferred`              | function | Create a `DeferredInterface` — a promise whose settlement (`resolve` / `reject`) is driven externally.                                         |
+| API                           | Kind     | Summary                                                                                                                                     |
+| ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createWorkflowContract`      | function | Compile the workflow-definition `ContractInterface` — JSON Schema + guard + parser + seeded generator, all from one shape.                  |
+| `createWorkflow`              | function | Build the live `WorkflowInterface` entity tree from a `WorkflowDefinition` (every node `pending`).                                          |
+| `restoreWorkflow`             | function | Rebuild an equivalent live tree from a `WorkflowSnapshot` — the inverse of `snapshot()` (structure + status + results + order).             |
+| `assertSnapshot`              | function | Validate a `WorkflowSnapshot`'s `bail` + every node's status / override against the lifecycle vocabulary (throws `RESTORE`).                |
+| `createMemoryWorkflowStore`   | function | Create the in-memory default `WorkflowStoreInterface` — persists `WorkflowSnapshot`s by id (the durable-store seam; no TTL, no options).    |
+| `createDatabaseWorkflowStore` | function | Create the driver-pluggable `WorkflowStoreInterface` over a `databases` table (the snapshot as one JSON column; driver defaults to memory). |
+| `createWorkflowRunner`        | function | Create a PURE `WorkflowRunnerInterface` engine over an optional `scheduler` — no registries, no tool/agent knowledge.                       |
+| `createScheduler`             | function | Create the cross-environment `setTimeout`-based default `SchedulerInterface`.                                                               |
+| `createRunner`                | function | Create a `RunnerInterface` over a handler — drives a `Queue`, ordered + fail-fast `execute`.                                                |
+| `createDeferred`              | function | Create a `DeferredInterface` — a promise whose settlement (`resolve` / `reject`) is driven externally.                                      |
 
 ### The entity tree
 
@@ -181,8 +175,6 @@ Pure, side-effect-free, exhaustively unit-tested (AGENTS §4.3 / §14). The stat
 | `success`                   | function | Box a value as a `Success` — the graceful outcome half of a `Result` (`{ success: true, value }`).                                           |
 | `failure`                   | function | Box an error as a `Failure` — the graceful outcome half of a `Result` (`{ success: false, error }`).                                         |
 | `findFailure`               | function | Find the first `TaskResult` in a positional list whose boxed outcome is a `Failure`, or `undefined` if none.                                 |
-| `workflowTag`               | function | The ancestry identifier of a workflow run — `workflow:<id>` (the W-c2 cycle-guard chain).                                                    |
-| `agentTag`                  | function | The ancestry identifier of an agent in a run chain — `agent:<name>`.                                                                         |
 | `buildWorkflowContext`      | function | Build a `WorkflowContext` (the identity every level inherits) from a node's `id` / `name` / optional `description`.                          |
 | `buildPhaseContext`         | function | Build a `PhaseContext` (own identity + the workflow back-reference) from the parent context + a phase node.                                  |
 | `buildTaskContext`          | function | Build a `TaskContext` (own identity + the phase back-reference) from the parent phase context + a task node.                                 |
@@ -190,11 +182,6 @@ Pure, side-effect-free, exhaustively unit-tested (AGENTS §4.3 / §14). The stat
 | `phaseDefinitionToSnapshot` | function | Convert one `PhaseDefinition` into an initial all-`pending` `PhaseSnapshot` (the per-phase step).                                            |
 | `taskDefinitionToSnapshot`  | function | Convert one `TaskDefinition` into an initial `pending` `TaskSnapshot` (the per-task leaf step — no result, empty metadata).                  |
 | `collectResults`            | function | Flatten per-phase `TaskResult` lists into one positional list — the workflow tier of the result tree.                                        |
-| `workflowToolSummary`       | function | Summarize a terminal `WorkflowResult` into the PLAIN value a `createWorkflowTool` handler RETURNS on success (a lean `{ status, count }`).   |
-| `completeDraft`             | function | Complete a `WorkflowDraft` into a strict `WorkflowDefinition` — synthesize missing ids positionally + default each missing name to its id.   |
-| `completePhaseDraft`        | function | Complete one `PhaseDraft` into a strict `PhaseDefinition` (the per-phase step of `completeDraft`; phase `i` → `phase-<i>`).                  |
-| `completeTaskDraft`         | function | Complete one `TaskDraft` into a strict `TaskDefinition` (the per-task step; task `j` of `<phaseId>` → `<phaseId>-task-<j>`).                 |
-| `expandSteps`               | function | Expand a flat `WorkflowSteps` blob into a strict `WorkflowDefinition` — each step becomes a one-task phase, in order.                        |
 | `parkSignal`                | function | Park until `signal` aborts — a promise that resolves on the abort event, never rejects (a one-shot listener, self-removing).                 |
 | `insertEntry`               | function | Insert a `[key, value]` entry at `index` in a readonly entries array — the pure splice step behind an insertion-ordered registry's `add`.    |
 | `moveEntry`                 | function | Reposition the entry keyed `key` to a new index in a readonly entries array — the pure remove-then-reinsert step behind a registry's `move`. |
@@ -203,35 +190,25 @@ Pure, side-effect-free, exhaustively unit-tested (AGENTS §4.3 / §14). The stat
 
 The shape VALUES `createWorkflowContract` compiles into the four lockstep outputs. They agree with the hand-written definition interfaces (the source of truth, AGENTS §14); a round-trip parity test (`generate → is → parse`) guards against drift.
 
-| API                  | Kind  | Summary                                                                                                           |
-| -------------------- | ----- | ----------------------------------------------------------------------------------------------------------------- |
-| `taskShape`          | const | The `TaskDefinition` shape — identity + an optional `run` string behavior reference.                              |
-| `phaseShape`         | const | The `PhaseDefinition` shape — identity + ordered `taskShape` tasks + an optional positive-integer `concurrency`.  |
-| `workflowShape`      | const | The `WorkflowDefinition` shape (the contract root) — identity + ordered `phaseShape` phases + an optional `bail`. |
-| `taskDraftShape`     | const | The DRAFT task shape — like `taskShape` but `id`/`name` optional (`run` still required).                          |
-| `phaseDraftShape`    | const | The DRAFT phase shape — like `phaseShape` but `id`/`name` optional, holding `taskDraftShape` tasks.               |
-| `workflowDraftShape` | const | The DRAFT workflow shape `createWorkflowDraftContract` compiles — `id`/`name` optional at all three levels.       |
-| `stepShape`          | const | The flat STEP shape — `{ name }`, the building block of `workflowStepsShape`.                                     |
-| `workflowStepsShape` | const | The FLAT shape `createWorkflowTool` advertises as its `parameters` — `{ name?, steps: [{ name }] }`.              |
-| `taskUpdateShape`    | const | The `TaskUpdate` shape — a partial edit to a `pending` task's `name` / `description`, both optional.              |
-| `phaseUpdateShape`   | const | The `PhaseUpdate` shape — a partial edit to a `pending` phase's `name` / `description` / `concurrency` / `bail`.  |
+| API                | Kind  | Summary                                                                                                           |
+| ------------------ | ----- | ----------------------------------------------------------------------------------------------------------------- |
+| `taskShape`        | const | The `TaskDefinition` shape — identity + an optional `run` string behavior reference.                              |
+| `phaseShape`       | const | The `PhaseDefinition` shape — identity + ordered `taskShape` tasks + an optional positive-integer `concurrency`.  |
+| `workflowShape`    | const | The `WorkflowDefinition` shape (the contract root) — identity + ordered `phaseShape` phases + an optional `bail`. |
+| `taskUpdateShape`  | const | The `TaskUpdate` shape — a partial edit to a `pending` task's `name` / `description`, both optional.              |
+| `phaseUpdateShape` | const | The `PhaseUpdate` shape — a partial edit to a `pending` phase's `name` / `description` / `concurrency` / `bail`.  |
 
 ### Constants
 
-| Constant                       | Kind  | Value                                                                                                              |
-| ------------------------------ | ----- | ------------------------------------------------------------------------------------------------------------------ |
-| `DEFAULT_BAIL`                 | const | The default `bail` — `false` (graceful: continue on a leaf failure).                                               |
-| `TASK_STATUSES`                | const | Every `TaskStatus`, frozen (`pending` → `running` → the four terminals).                                           |
-| `PHASE_STATUSES`               | const | Every `PhaseStatus`, frozen.                                                                                       |
-| `WORKFLOW_STATUSES`            | const | Every `WorkflowStatus`, frozen.                                                                                    |
-| `TERMINAL_TASK_STATUSES`       | const | The terminal `TaskStatus` values, frozen (`completed` / `failed` / `skipped` / `stopped`).                         |
-| `TASK_TRANSITIONS`             | const | The legal `TaskStatus` transition graph — each status mapped to those it may move to directly, frozen.             |
-| `DEFAULT_PHASE_CONCURRENCY`    | const | The per-phase task concurrency when a `PhaseDefinition` omits `concurrency` — a large cap (effectively unbounded). |
-| `MAX_WORKFLOW_DEPTH`           | const | The maximum nesting depth an `agent` task may spawn into (`8`) — the bound the depth/cycle guard enforces.         |
-| `WORKFLOW_TOOL_NAME`           | const | The name (`'workflow'`) the runner binds the workflow tool onto a dispatched subagent's context under.             |
-| `WORKFLOW_TOOL_FLAT_EXAMPLE`   | const | A complete FLAT authoring example (`{ name, steps: [{ name }] }`) embedded verbatim in the tool description.       |
-| `WORKFLOW_TOOL_NESTED_EXAMPLE` | const | A minimal NESTED authoring example (a full `WorkflowDefinition`) — the advanced-form example in the description.   |
-| `WORKFLOW_TOOL_DESCRIPTION`    | const | The multi-line description `createWorkflowTool` advertises — the flat form (primary) + the nested form (advanced). |
+| Constant                    | Kind  | Value                                                                                                              |
+| --------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------ |
+| `DEFAULT_BAIL`              | const | The default `bail` — `false` (graceful: continue on a leaf failure).                                               |
+| `TASK_STATUSES`             | const | Every `TaskStatus`, frozen (`pending` → `running` → the four terminals).                                           |
+| `PHASE_STATUSES`            | const | Every `PhaseStatus`, frozen.                                                                                       |
+| `WORKFLOW_STATUSES`         | const | Every `WorkflowStatus`, frozen.                                                                                    |
+| `TERMINAL_TASK_STATUSES`    | const | The terminal `TaskStatus` values, frozen (`completed` / `failed` / `skipped` / `stopped`).                         |
+| `TASK_TRANSITIONS`          | const | The legal `TaskStatus` transition graph — each status mapped to those it may move to directly, frozen.             |
+| `DEFAULT_PHASE_CONCURRENCY` | const | The per-phase task concurrency when a `PhaseDefinition` omits `concurrency` — a large cap (effectively unbounded). |
 
 ### Types
 
@@ -240,11 +217,6 @@ The shape VALUES `createWorkflowContract` compiles into the four lockstep output
 | `TaskDefinition`          | interface | `{ id, name, description?, run?, retries?, timeout? }` — one task's serializable definition (`run` = an optional plain behavior-name string; `retries` / `timeout` are per-task reliability overrides).                                                           |
 | `PhaseDefinition`         | interface | `{ id, name, description?, tasks, concurrency?, bail? }` — ordered tasks (concurrent) + an optional throttle + an optional per-phase `bail` override.                                                                                                             |
 | `WorkflowDefinition`      | interface | `{ id, name, description?, phases, bail? }` — the root a UI/LLM authors and the contract validates.                                                                                                                                                               |
-| `TaskDraft`               | interface | `{ id?, name?, description?, run?, retries?, timeout? }` — a `TaskDefinition` with OPTIONAL id/name (the tool synthesizes them).                                                                                                                                  |
-| `PhaseDraft`              | interface | `{ id?, name?, description?, tasks, concurrency?, bail? }` — a `PhaseDefinition` with OPTIONAL id/name + `TaskDraft` tasks.                                                                                                                                       |
-| `WorkflowDraft`           | interface | `{ id?, name?, description?, phases, bail? }` — the lenient form `createWorkflowDraftContract` validates + `completeDraft` completes.                                                                                                                             |
-| `WorkflowStep`            | interface | `{ name }` — one flat step; `name` is the registered behavior name (becomes the task's `run`, not a human label).                                                                                                                                                 |
-| `WorkflowSteps`           | interface | `{ name?, steps }` — the FLAT authoring blob `createWorkflowTool` advertises; each step → a one-task phase via `expandSteps`.                                                                                                                                     |
 | `WorkflowContext`         | interface | `{ id, name, description? }` — the ambient identity every level inherits (the context chain's root).                                                                                                                                                              |
 | `PhaseContext`            | interface | `WorkflowContext` + `{ workflow }` — a phase's identity plus the back-reference UP the tree.                                                                                                                                                                      |
 | `TaskContext`             | interface | `WorkflowContext` + `{ phase }` — a task's identity plus its full lineage (workflow → phase → task).                                                                                                                                                              |
@@ -283,10 +255,8 @@ The shape VALUES `createWorkflowContract` compiles into the four lockstep output
 | `WorkflowFunctions`       | type      | `Readonly<Record<string, WorkflowFunction>>` — the `function`-task registry (a name absent ⇒ auto-complete).                                                                                                                                                      |
 | `TaskControllerInterface` | interface | The per-task handle — `signal` / `aborted` / `input` / `task` + `results()` (read-up the result tree).                                                                                                                                                            |
 | `WorkflowResult`          | interface | `{ workflow, status, results }` — the settled live workflow + its terminal status + the flattened result tree.                                                                                                                                                    |
-| `WorkflowRunOptions`      | type      | `WorkflowOptions` + `{ signal?, timeout?, budget? }` — construction options PLUS the per-run bounds; the engine's depth/cycle bookkeeping lives in the adapter factories' own closures, not here.                                                                 |
+| `WorkflowRunOptions`      | type      | `WorkflowOptions` + `{ signal?, timeout?, budget? }` — construction options PLUS the per-run bounds; the engine's depth/cycle bookkeeping lives in the adapter factories' own closures (in `@orkestrel/tool`), not here.                                          |
 | `WorkflowRunnerOptions`   | interface | `{ scheduler? }` — the PURE engine's only option (pacing); no `functions` / `tools` / `agents` registry — a task resolves its own `handler` at construction.                                                                                                      |
-| `AgentFunctionOptions`    | interface | `{ runner?, depth?, ancestry? }` — options for `createAgentFunction`: the OPT-IN workflow-tool binding + depth/cycle bookkeeping.                                                                                                                                 |
-| `WorkflowToolOptions`     | interface | `{ depth?, ancestry? }` — the depth + ancestry a `createWorkflowTool`-built tool runs the NESTED workflow under (the propagation carrier).                                                                                                                        |
 | `WorkflowRunnerInterface` | interface | The PURE-engine orchestrator — `execute(definition, options?)` builds + drives a live tree to a `WorkflowResult`; `execute(workflow, options?)` drives an already-built, caller-owned live tree instead.                                                          |
 | `SchedulerPriority`       | type      | `'user' \| 'normal' \| 'background'` — a relative urgency hint (uniform in the default; backends honour it).                                                                                                                                                      |
 | `SchedulerOptions`        | interface | `{ priority?: SchedulerPriority; signal?: AbortSignal }` — options for a single `yield` / `delay`.                                                                                                                                                                |
@@ -473,9 +443,9 @@ These invariants hold across `src/core/workflows` ↔ `workflows.md`:
 
 12. **The runner COMPOSES, never re-implements — a PURE engine.** `WorkflowRunner.execute` builds the live tree from the definition (the SINGLE source of truth — each task's `run` string / `retries` / `timeout` and per-phase `concurrency` / `bail` come from the same definition the tree is built from, so the executed tree can never drift) and drives it: phases SEQUENTIALLY (a plain await loop), each phase's tasks CONCURRENTLY through ONE substrate `createRunner` per phase (`concurrency` = the phase's throttle). It writes ZERO concurrency / retry / abort logic AND carries NO `functions` / `tools` / `agents` registry of its own — `#runPhase` reads the EFFECTIVE per-phase bail (`effectiveBail = phase.bail ?? workflow.bail`) and maps it onto that substrate Runner's fail-fast (`true`) vs settle-all (`false`), AND threads each task's `retries` / `timeout` through the Runner's per-entry `entries` resolver (the substrate's per-unit overrides); the run-level abort / [timeout](timeout.md) / [budget](budget.md) fold through `AbortSignal.any` (exactly as the agent runtime folds its bounds); pacing is the shipped scheduler. The runner DRIVES the live entity (`start` → `complete` / `fail` / `skip`), invoking each task's OWN already-resolved `handler` — never re-implementing status, never performing a by-name registry lookup itself. A run-level cancel halts the loop, `skip`s the remaining tasks / phases, and force-`stop`s the workflow (settles `stopped`); `execute` RESOLVES on a cancel (never rejects) — the partial outcome is read from the returned `WorkflowResult`. The three cancellation causes folded onto a task's signal are TOLD APART (`#runTask`'s `#skipping` discriminator, the runner `Controller`'s unit-`aborted` vs its attempt `signal`): a per-attempt `timeout` is a RETRYABLE FAILURE — a non-final timed-out attempt drives the substrate retry leaving the leaf `running` (a later attempt can still `complete`), a final one `fail`s the leaf — so a timed-out task ends `failed`, never `skipped`; whereas a sibling fail-fast under `bail` and a run-level cancel (abort / run-`timeout` / budget) STILL `skip` the in-flight leaf.
 
-13. **A task's behavior is a plain string, resolved ONCE into a `handler`; the engine dispatches by invoking it.** A live `TaskInterface`'s `run` (an optional plain name string, mirroring `TaskDefinition.run` / `TaskSnapshot.run`) is resolved AT CONSTRUCTION — on a fresh build, a restore (when `functions` is supplied), or a live `add` mint, all via the SAME path — against the workflow-level `WorkflowOptions.functions` registry into the task's own `handler: WorkflowFunction | undefined`. `#runTask` then simply invokes `task.handler` directly: `undefined` (an omitted `run`, or a `run` name absent from `functions`) AUTO-COMPLETES (the no-handler rule) — the engine performs no by-name lookup of its own. Wiring a `function`-form task to a registered TOOL or a live AGENT is an OPT-IN adapter concern: `createToolFunction(tools, name)` wraps a `ToolManagerInterface` tool as a `WorkflowFunction` (a tool result's `error` is re-thrown so the leaf `fail`s — honouring `bail`); `createAgentFunction(agent, options?)` wraps a live `AgentInterface` as a `WorkflowFunction`, folding the depth + cycle guard into its OWN closure — running it at `AgentFunctionOptions.depth === MAX_WORKFLOW_DEPTH` (it would author a nested workflow at depth + 1), or whose target agent is already an ancestor (`agentTag` in `AgentFunctionOptions.ancestry`, a re-entry cycle), is REJECTED into a typed `DEPTH` error the handler throws (so the leaf `fail`s) — it never runs the agent. A caller composes either adapter into its OWN `functions` registry like any other behavior; the engine itself never imports `@orkestrel/agent`.
+13. **A task's behavior is a plain string, resolved ONCE into a `handler`; the engine dispatches by invoking it.** A live `TaskInterface`'s `run` (an optional plain name string, mirroring `TaskDefinition.run` / `TaskSnapshot.run`) is resolved AT CONSTRUCTION — on a fresh build, a restore (when `functions` is supplied), or a live `add` mint, all via the SAME path — against the workflow-level `WorkflowOptions.functions` registry into the task's own `handler: WorkflowFunction | undefined`. `#runTask` then simply invokes `task.handler` directly: `undefined` (an omitted `run`, or a `run` name absent from `functions`) AUTO-COMPLETES (the no-handler rule) — the engine performs no by-name lookup of its own. Wiring a `function`-form task to a registered TOOL or a live AGENT is an OPT-IN adapter concern that lives in the `@orkestrel/tool` package (a `createToolFunction` / `createAgentFunction` composed into the caller's OWN `functions` registry like any other behavior); the engine itself never imports a tool/agent package, and `WorkflowError`'s `TOOL` / `DEPTH` codes are public type surface those adapters construct.
 
-14. **`createWorkflowTool` is the by-agent path, with a WIDENED authoring surface.** It wraps a `WorkflowDefinition` as one LLM-callable `ToolInterface` (named `WORKFLOW_TOOL_NAME`) so a model authors + runs a whole tree in one call, and `createMCPServer` / `createMCPRoutes` expose it over HTTP / WebSocket for free (nothing MCP is wired here). Because a 2B model reliably CALLS the tool but cannot reliably emit the full four-level nested definition (six required `id`/`name` strings, all-or-nothing), the tool **advertises the SIMPLE flat shape** (`workflowStepsShape` → `{ name?, steps: [{ name }] }`) as its `parameters`, carries a worked example of both forms in its `description` (`WORKFLOW_TOOL_DESCRIPTION`), and threads per-field `description`s into the advertised schema (the `run` string, the flat `name`). The widening is **ADDITIVE and lives ONLY at the tool boundary** — the canonical `WorkflowDefinition` / `createWorkflowContract` / runner are byte-for-byte unchanged and STRICT. The handler branches on the authored args' SHAPE: no args ⇒ the wrapped definition; a `steps` array ⇒ the FLAT form, parsed + `expandSteps`'d (one one-task phase per step, a step's `name` → `run`); otherwise the nested DRAFT form, `createWorkflowDraftContract`-parsed + `completeDraft`'d (any omitted `id`/`name` synthesized positionally — `wf` / `phase-<i>` / `<phaseId>-task-<j>`, a missing name defaulting to its id; a provided one kept; an explicitly-empty `id` rejected, garbage ≠ omitted). The full nested definition is still accepted as the draft super-set (the documented escape-hatch). **EVERY path then converges on the STRICT `createWorkflowContract().is` gate before running** (soundness preserved — the leniency never reaches the runner). The handler conforms to the **universal tool-handler contract** (AGENTS §14): it RETURNS the plain run-summary value (`{ status, count }`, via `workflowToolSummary`) on success and THROWS a typed `WorkflowError` on failure — it does NOT build a `ToolResult` itself. A blob that can't expand / complete, or whose result fails the strict gate (an empty `id`, `concurrency: 0`) ⇒ THROW a `TOOL` `WorkflowError` (no run); an over-deep / cyclic nested run ⇒ THROW a `DEPTH` `WorkflowError` (the same code `createAgentFunction`'s own guard raises). The `ToolManager` then performs the ONE canonical wrap — `{ id, name, value }` on a return, `{ id, name, error }` on a throw (ISOLATED, nothing escapes the run) — so the outcome appears EXACTLY ONCE, identically, over BOTH the agent loop and MCP (and a failure's top-level `error` is what `buildToolResult` maps to MCP `isError: true`); there is no doubly-nested `{ id, name, value: { … } }` envelope. `createAgentFunction`'s optional `runner` binds a depth/cycle-aware `createWorkflowTool` onto the wrapped agent's `context.tools` (the propagation seam across the agent/tool boundary), closed over at BIND time (`WorkflowToolOptions`) since a tool handler receives no ambient context.
+14. **`WorkflowError`'s `TOOL` / `DEPTH` codes are public type surface for the `@orkestrel/tool` package's adapters.** `TOOL` is thrown by a malformed authored-args blob at a workflow-authoring tool boundary; `DEPTH` is thrown by an over-deep or cyclic nested `agent` → workflow-tool → workflow dispatch. Both codes are constructed OUTSIDE this package (by `@orkestrel/tool`'s adapter factories, which depend on `@src/core` for `WorkflowError` / `createWorkflowContract` / `WorkflowRunnerInterface`), never by anything in `src/core/workflows` itself — this package only defines and documents the codes; that package raises them.
 
 15. **`WorkflowRunnerInterface.execute(workflow)` requires a fresh, non-destroyed tree.** The entity-driving overload requires `workflow.status === 'pending'` AND `!workflow.destroyed` — any other state (already started, already terminal, or torn down) is a programmer-timing error, so it THROWS a `TRANSITION` `WorkflowError` synchronously rather than silently no-opping or building a second tree. Once accepted, the phase loop RE-READS the live `workflow.phases.phases()` (and each phase's live `tasks`) EVERY iteration — a cursor over the live managers, not a one-time snapshot — so a caller's `workflow.add` mid-run is picked up and actually dispatched onto the SAME substrate runner (the same `retries` / `timeout` / signal path as a build-time task), and the post-settle sweep skips any task still `pending` when the phase loop catches up. The `definition`-building overload has its own programmer-error boundary (AGENTS §12 exception to the resolves-never-rejects contract): a PATHOLOGICAL `definition` — e.g. a duplicate phase or task `id` — THROWS SYNCHRONOUSLY while building the live tree (`PhaseManager.append` / `TaskManager.append`'s own duplicate-id `MUTATION` throw), before any phase runs and before the returned `Promise` is created.
 
@@ -499,7 +469,7 @@ These invariants hold across `src/core/workflows` ↔ `workflows.md`:
 
 25. **The durable store is a DUAL-store convention.** A `WorkflowStoreInterface` persists the pure-JSON `WorkflowSnapshot` keyed by its own id through two interchangeable backends under `workflows/stores/` — the `QueueStore` / `SessionStore` pattern. `MemoryWorkflowStore` (`createMemoryWorkflowStore`) is the zero-plumbing DEFAULT: a process-lifetime `Map`, no encoding (the snapshot is already pure JSON). `DatabaseWorkflowStore` (`createDatabaseWorkflowStore`) is the opt-in, driver-pluggable twin over a `databases` table — it stores the snapshot as ONE OPAQUE JSON column (a `WorkflowSnapshotRow` `{ id; snapshot }`, the `snapshot` a `rawShape` blob — exactly as `DatabaseQueueStore` stores its `input`). Storing the snapshot whole is lossless (it is COMPLETE and self-contained) AND keeps the row type FLAT — a structured multi-column snapshot table would force the contract to `Infer` the deeply-nested snapshot shape (workflow → phases → tasks → results) and trip TS2589; the opaque column sidesteps it, reading back as `unknown` and narrowed to a `WorkflowSnapshot` on `get` by `isWorkflowSnapshot` (the AGENTS §14 boundary narrow — a total guard, never throwing). The Database store's driver DEFAULTS to memory (`createMemoryDriver()`), so it ALSO works in memory out of the box; you opt into durability by passing a JSON / SQLite / IndexedDB driver, and it swaps in behind the SAME three-method interface WITHOUT touching the engine or the entity tree. Restore stays the shipped `restoreWorkflow` (which applies the DEEPER `assertSnapshot` lifecycle-vocabulary gate — complementary to the shallow `isWorkflowSnapshot` shape guard).
 
-What ships is **W-a → W-d**: the definition contract + the full type surface + the derivation helpers (W-a), the live entity tree + the result tree + snapshot/restore (W-b), the PURE `WorkflowRunner` engine + the `run`-string / `handler` model + the OPT-IN `createToolFunction` / `createAgentFunction` adapters + `createWorkflowTool` + the depth/cycle-bounded agent-native recursion (W-c / W-c2), and the durable `WorkflowStore` (W-d — `WorkflowStoreInterface` + BOTH the in-memory `MemoryWorkflowStore` / `createMemoryWorkflowStore` AND the driver-pluggable `DatabaseWorkflowStore` / `createDatabaseWorkflowStore`, persisting the `WorkflowSnapshot` by id; the `QueueStore` / `SessionStore` driver-swap pattern, so a JSON / SQLite / IndexedDB backend swaps in through the same interface without touching the engine). Deliberately **not** part of this surface yet, by the "build only what earns its keep" discipline: a persistent server/browser driver wired in by default (the durable JSON / SQLite / IndexedDB driver lands with its environment — `DatabaseWorkflowStore` already takes any of them), `resource` (Pool / Worker) task adapters, and a top-level `WorkflowManager` registry + child-manager batch overloads. Those are additive — everything above is unchanged.
+What ships is **W-a → W-d**: the definition contract + the full type surface + the derivation helpers (W-a), the live entity tree + the result tree + snapshot/restore (W-b), the PURE `WorkflowRunner` engine + the `run`-string / `handler` model (W-c), and the durable `WorkflowStore` (W-d — `WorkflowStoreInterface` + BOTH the in-memory `MemoryWorkflowStore` / `createMemoryWorkflowStore` AND the driver-pluggable `DatabaseWorkflowStore` / `createDatabaseWorkflowStore`, persisting the `WorkflowSnapshot` by id; the `QueueStore` / `SessionStore` driver-swap pattern, so a JSON / SQLite / IndexedDB backend swaps in through the same interface without touching the engine). The tool/agent authoring adapters + the depth/cycle-bounded agent-native recursion (formerly W-c2) live in the separate `@orkestrel/tool` package, which depends on this one. Deliberately **not** part of this surface yet, by the "build only what earns its keep" discipline: a persistent server/browser driver wired in by default (the durable JSON / SQLite / IndexedDB driver lands with its environment — `DatabaseWorkflowStore` already takes any of them), `resource` (Pool / Worker) task adapters, and a top-level `WorkflowManager` registry + child-manager batch overloads. Those are additive — everything above is unchanged.
 
 ## Patterns
 
@@ -546,16 +516,14 @@ const contract = createWorkflowContract()
 contract.is(definition) // true — a total guard (malformed input ⇒ false, never throws)
 contract.parse({ id: '', phases: [] }) // undefined — an empty id fails the refinement
 contract.generate() // a deterministic valid WorkflowDefinition (seed a RandomFunction for reproducibility)
-contract.schema // the emitted JSON Schema for the full definition (createWorkflowTool advertises the simpler FLAT shape)
+contract.schema // the emitted JSON Schema for the full definition
 ```
 
 ### Running a workflow
 
 ```ts
-import { createAgentFunction, createToolFunction, createWorkflowRunner } from '@src/core'
-import { createToolManager } from '@orkestrel/agent'
+import { createWorkflowRunner } from '@src/core'
 
-const tools = createToolManager() // holds the tool-backed behaviors
 const runner = createWorkflowRunner() // a PURE engine — no registries of its own
 
 const result = await runner.execute(definition, {
@@ -566,8 +534,9 @@ const result = await runner.execute(definition, {
 			if (controller.aborted) return // race long work against controller.signal
 			return `fetched ${controller.task.id}`
 		},
-		publish: createToolFunction(tools, 'publish'), // OPT-IN: run a registered tool BY NAME
-		summarizer: createAgentFunction(freshAgentFor('summarizer')), // OPT-IN: run a live agent
+		// OPT-IN: run a registered tool or a live agent through an `@orkestrel/tool` adapter
+		// (`createToolFunction` / `createAgentFunction`), composed into this SAME registry.
+		publish: async () => 'published',
 	},
 })
 result.status // 'completed' (graceful) — even if a leaf failed
@@ -637,61 +606,7 @@ const result = await runner.execute(definition, {
 // and force-stops the workflow → status === 'stopped'. `execute` RESOLVES (never rejects) on a cancel.
 ```
 
-### Authoring through the tool (the small-model path)
-
-`createWorkflowTool` advertises a deliberately-simple FLAT shape so even a 2B model can author a complete tree. The tool accepts three forms and converges them all on the STRICT contract before running:
-
-```ts
-import { createWorkflowRunner, createWorkflowTool } from '@src/core'
-import { createToolManager } from '@orkestrel/agent'
-
-const runner = createWorkflowRunner()
-const tool = createWorkflowTool(definition, runner)
-
-// 1) The ADVERTISED flat form — the simplest thing a small model can emit. Each step becomes a
-//    one-task phase, in order; a step's `name` is a REGISTERED behavior name (becomes the task's `run`).
-await tool.execute({
-	name: 'release',
-	steps: [{ name: 'compile' }, { name: 'publish' }],
-})
-// → { status: 'completed', count: 2 }
-
-// 2) A nested DRAFT — omit any id/name and they are synthesized positionally (wf / phase-0 /
-//    phase-0-task-0), a missing name defaulting to its id.
-await tool.execute({ phases: [{ tasks: [{ run: 'compile' }] }] })
-
-// 3) The full nested WorkflowDefinition — the advanced escape-hatch (documented in the tool's
-//    description), still accepted unchanged.
-await tool.execute({ ...definition })
-```
-
-Every form is widened ONLY here, at the tool boundary, then validated against `createWorkflowContract().is` before it runs — a blob that can't expand/complete, or whose result fails the strict gate (an empty `id`, `concurrency: 0`), throws a typed `TOOL` `WorkflowError`. `completeDraft` / `expandSteps` are exported, so a caller can perform the same widening outside the tool.
-
-### Agent tasks & the depth/cycle guard (W-c2)
-
-`createAgentFunction` is the OPT-IN adapter that wraps a live agent as a `WorkflowFunction`, folding the depth + cycle guard into its OWN closure — the engine itself carries none:
-
-```ts
-import { createAgentFunction, createWorkflowRunner, createWorkflowTool } from '@src/core'
-import { createToolManager } from '@orkestrel/agent'
-
-const runner = createWorkflowRunner() // a PURE engine
-
-// An `agent`-backed task runs a subagent. `runner` (when passed) binds a depth/cycle-aware
-// workflow tool onto the agent's own context, so it can author + run a NESTED workflow
-// (bounded by MAX_WORKFLOW_DEPTH).
-const review = createAgentFunction(freshAgentFor('reviewer'), { runner })
-
-// Compose it into the caller's OWN functions registry like any other behavior.
-await runner.execute(definition, { functions: { review } })
-
-// The by-agent path: wrap a whole definition as ONE LLM-callable tool.
-const tool = createWorkflowTool(definition, runner) // parameters advertise the FLAT authoring shape
-const tools = createToolManager()
-tools.add(tool) // a model authors + runs a workflow in one call (MCP-exposable for free)
-```
-
-The guard rejects an over-deep nested run (past `MAX_WORKFLOW_DEPTH`) or a cycle (an agent / workflow already in the run `ancestry`) — as a typed `DEPTH` error `createAgentFunction`'s handler throws (so the leaf `fail`s) or a thrown `DEPTH` `WorkflowError` from the tool handler. The throw never escapes the run: the `ToolManager` ISOLATES it into the canonical tool result's top-level `error` (the universal tool-handler contract, AGENTS §14), so the agent loop / MCP see a clean tool error (MCP `isError: true`) rather than an uncaught fault.
+See the `@orkestrel/tool` package's guide for authoring a definition through an LLM-callable tool (the FLAT / draft / nested authoring surface) and for wiring a `function`-form task to a registered tool or a live agent (`createToolFunction` / `createAgentFunction`, plus the depth/cycle guard against runaway `agent` → workflow-tool → workflow recursion).
 
 **Control the live run.** The engine returns the live tree, but you can also drive, force, pause, mutate, observe, and serialize it directly:
 
@@ -917,34 +832,23 @@ The pure functions the entity tree / runner / tool are built from (AGENTS §4.3 
 
 ```ts
 import {
-	agentTag,
 	assertSnapshot,
 	buildPhaseContext,
 	buildTaskContext,
 	buildWorkflowContext,
 	canTransitionTask,
 	collectResults,
-	completeDraft,
-	completePhaseDraft,
-	completeTaskDraft,
 	definitionToSnapshot,
 	deriveBoundary,
 	derivePhaseStatus,
 	deriveWorkflowStatus,
-	expandSteps,
 	findFailure,
 	isTerminalStatus,
 	isWorkflowSnapshot,
 	parkSignal,
 	phaseDefinitionToSnapshot,
 	taskDefinitionToSnapshot,
-	workflowTag,
-	workflowToolSummary,
 } from '@src/core'
-
-// Ancestry tags — the W-c2 depth/cycle-guard chain.
-workflowTag('release') // 'workflow:release'
-agentTag('reviewer') // 'agent:reviewer'
 
 // Status predicates + derivations — pure, order-insensitive reductions (never throw).
 isTerminalStatus('completed') // true
@@ -967,17 +871,10 @@ isWorkflowSnapshot(JSON.parse(JSON.stringify(snapshot))) // true — the shape s
 // The pending-suffix boundary — the index of the first `pending` entry (or `length` if none).
 deriveBoundary(['completed', 'completed', 'pending', 'pending']) // 2
 
-// Result-tree flattening + the tool's plain success summary.
+// Result-tree flattening.
 collectResults([[], []]) // [] — no settled tasks yet
 const result = await runner.execute(definition)
-workflowToolSummary(result) // { status: 'completed', count: result.results.length }
 findFailure(result.results) // the first failing TaskResult, or undefined
-
-// The tool's lenient-authoring synthesis — id/name auto-filled positionally.
-completeDraft({ phases: [{ tasks: [{ run: 'compile' }] }] })
-completePhaseDraft({ tasks: [] }, 0) // → { id: 'phase-0', name: 'phase-0', tasks: [] }
-completeTaskDraft({ run: 'compile' }, 'phase-0', 0)
-expandSteps({ steps: [{ name: 'compile' }] }) // one one-task phase per step (step `name` → task `run`)
 
 // Park until an AbortSignal fires — never rejects, self-removing listener.
 const abort = new AbortController()
@@ -1200,7 +1097,6 @@ A successful run fires `start` → `unit`/`settle` per unit → `finish`. A fail
 - **Choose `bail` deliberately** — `false` (graceful) when failures are useful data and every phase should run; `true` (halt) for transaction semantics where the first failure aborts the rest.
 - **Hold the live tree the engine returns** — `result.workflow` is the source of truth; navigate it (`phase(id)?.task(id)?.status` / `.result`) and read the result tree (`results()`).
 - **Snapshot for durability** — `workflow.snapshot()` is the pure-JSON payload; `restoreWorkflow` rebuilds an identical live tree, and the `WorkflowStore` seam persists it (W-d).
-- **Resolve a FRESH agent per `createAgentFunction`-backed task** — the adapter binds a workflow tool onto the agent's own context, so two concurrent tasks naming the same agent must not share an instance.
 - **`yield` to stay cooperative** — between units of long-running work, `await scheduler.yield()` so the host can flush I/O, fire timers, and paint; never busy-loop a tight synchronous loop that starves the host.
 - **Always thread a `signal` through the scheduler** — pass `options.signal` through `yield` / `delay` so cancellation rejects the pending wait at once (with the signal's `reason`) instead of stalling until the interval elapses; an aborted loop should fall out via that rejection, not a polled flag alone.
 - **`delay` for spacing, `yield` for a turn** — reach for `delay(ms)` to space retries or paced work; reach for `yield()` (a zero-delay turn) when you only need to let the host run before continuing.
@@ -1215,16 +1111,16 @@ A successful run fires `start` → `unit`/`settle` per unit → `finish`. A fail
 ## Tests
 
 - [`tests/guides/parity.test.ts`](../../tests/guides/src/parity.test.ts) — the `## Surface` ↔ source bijection across `src/core/workflows` (value + type exports), plus each behavioral interface's `## Methods` ↔ source-method bijection and each implementing-class ↔ interface method parity.
-- [`tests/src/core/helpers.test.ts`](../../tests/src/core/helpers.test.ts) — the pure helpers: `isTerminalStatus`, the `derivePhaseStatus` / `deriveWorkflowStatus` truth tables (the latter taking `PhaseDerivation[]` — each phase's status + its effective `bail`; a graceful-bail `failed` phase folds into `completed` while a strict-bail `failed` phase propagates `failed`, mixed-bail permutations order-insensitive), `canTransitionTask`, the `workflowTag` / `agentTag` ancestry tags, the lineage builders, `definitionToSnapshot` + variants (`phaseDefinitionToSnapshot` persisting the effective per-phase `bail`; `taskDefinitionToSnapshot` carrying `run` / `retries` / `timeout` verbatim), `collectResults`, `workflowToolSummary` (the plain `{ status, count }` value the tool handler returns), `parkSignal` (resolves on abort, never rejects), and the lenient-authoring synthesis — `completeDraft` / `completePhaseDraft` / `completeTaskDraft` (positional ids, name defaulting to id, a provided id/name preserved, the per-phase `bail` + per-task `retries` / `timeout` carried over) and `expandSteps` (one one-task phase per step, a step's `name` → the task's `run`), each yielding a tree the STRICT contract accepts; and `isWorkflowSnapshot` (the §14 boundary narrow `DatabaseWorkflowStore` uses to read back its opaque JSON column — accepting a real snapshot + its JSON-revived form, rejecting off-shape values without throwing).
-- [`tests/src/core/shapers.test.ts`](../../tests/src/core/shapers.test.ts) — the shape descriptors: the `taskShape` / `phaseShape` / `workflowShape` mirroring the hand-written definition interfaces, the per-field `description`s riding the `run` string + key fields (Rank 1), `describedLiteral`, the draft shapes (`workflowDraftShape` / `phaseDraftShape` / `taskDraftShape` — id/name optional, `run` required, a provided id still `minLength: 1`), and the flat `stepShape` / `workflowStepsShape`.
+- [`tests/src/core/helpers.test.ts`](../../tests/src/core/helpers.test.ts) — the pure helpers: `isTerminalStatus`, the `derivePhaseStatus` / `deriveWorkflowStatus` truth tables (the latter taking `PhaseDerivation[]` — each phase's status + its effective `bail`; a graceful-bail `failed` phase folds into `completed` while a strict-bail `failed` phase propagates `failed`, mixed-bail permutations order-insensitive), `canTransitionTask`, the lineage builders, `definitionToSnapshot` + variants (`phaseDefinitionToSnapshot` persisting the effective per-phase `bail`; `taskDefinitionToSnapshot` carrying `run` / `retries` / `timeout` verbatim), `collectResults`, `parkSignal` (resolves on abort, never rejects), and `isWorkflowSnapshot` (the §14 boundary narrow `DatabaseWorkflowStore` uses to read back its opaque JSON column — accepting a real snapshot + its JSON-revived form, rejecting off-shape values without throwing).
+- [`tests/src/core/shapers.test.ts`](../../tests/src/core/shapers.test.ts) — the shape descriptors: the `taskShape` / `phaseShape` / `workflowShape` mirroring the hand-written definition interfaces, the per-field `description`s riding the `run` string + key fields (Rank 1), `describedLiteral`.
 - [`tests/src/core/tasks/Task.test.ts`](../../tests/src/core/tasks/Task.test.ts) — the leaf state machine: guarded `start` / `complete` / `fail` / `skip` / `stop`, the recorded `TaskResult` (the boxed `Success` / `Failure`), the `TRANSITION` `WorkflowError` on an illegal move, the snapshot, and the `emitter` (`TaskEventMap`) + emit-safety.
 - [`tests/src/core/phases/Phase.test.ts`](../../tests/src/core/phases/Phase.test.ts) — the derived middle tier: `derivePhaseStatus` reacting to child transitions (the cascade), the `skip` / `stop` override, `results()`, the snapshot → restore round-trip (the `#override` + positional order after an interior `skip`), and the `emitter` (`PhaseEventMap`) + emit-safety.
 - [`tests/src/core/Workflow.test.ts`](../../tests/src/core/Workflow.test.ts) — the derived root: `deriveWorkflowStatus` under both `bail` modes, the cascade propagating up, the result tree (`results()` flattening every phase), the override, the full `snapshot()` → `restoreWorkflow()` round-trip (self-contained `bail` + override), and the `emitter` (`WorkflowEventMap`) + emit-safety.
 - [`tests/src/core/phases/PhaseManager.test.ts`](../../tests/src/core/phases/PhaseManager.test.ts) — the lean phases registry: `append` / `phase` / `phases` / `count`, insertion order preserved.
 - [`tests/src/core/tasks/TaskManager.test.ts`](../../tests/src/core/tasks/TaskManager.test.ts) — the lean tasks registry: `append` / `task` / `tasks` / `count`, order surviving an interior `skip`.
 - [`tests/src/core/tasks/TaskController.test.ts`](../../tests/src/core/tasks/TaskController.test.ts) — the per-task handle: `signal` / `aborted`, the `input` bag, the lineage `task`, and `results()` reading up the live tree.
-- [`tests/src/core/WorkflowRunner.test.ts`](../../tests/src/core/WorkflowRunner.test.ts) — the PURE-engine runner end-to-end: phases-sequential / tasks-concurrent, a no-handler task auto-completing, the per-phase `concurrency` throttle, `bail: false` recording failures while finishing vs `bail: true` aborting on the first failure (incl. a fail-while-a-sibling-is-mid-flight), per-task `retries` recovering a divergent task while a no-retry sibling fails + a per-task `timeout` FAILING a parked leaf (never skipping it, the failure recorded under `bail: false`) + a retries+timeout attempt RECOVERING (attempt 1's deadline retries, attempt 2 `completes` — the recovered value kept) + a `bail: true` timeout-only fault deriving `failed` and halting a later phase + the sibling-fail-fast still SKIPPING a parked sibling (the timeout distinguisher does not break skip-on-fail-fast) + an omission-regression (neither field = today's behavior), the per-phase `bail` override (a strict phase halting under a graceful workflow / a graceful phase settling-all under a strict workflow / the `effectiveBail = phase.bail ?? workflow.bail` inheritance pair), the abort / timeout / budget fold (settling `stopped`), dispatch by a task's own resolved `handler` (a plain function, a `createToolFunction`-wrapped tool, a `createAgentFunction`-wrapped agent), and the depth-guard rejecting an over-deep / cyclic agent task into a typed `DEPTH` failure.
-- [`tests/src/core/factories.test.ts`](../../tests/src/core/factories.test.ts) — `createWorkflowContract` / `createWorkflowDraftContract` / `createWorkflow` / `restoreWorkflow` / `assertSnapshot` / `createWorkflowRunner` / `createToolFunction` / `createAgentFunction` / `createWorkflowTool` each return a working instance / value (a round-trip), and `assertSnapshot` rejecting an invalid snapshot with a `RESTORE` `WorkflowError`; `restoreWorkflow(snapshot, { functions })` resuming real work vs a bare `restoreWorkflow(snapshot)` staying declarative replay. The `createWorkflowTool` handler conforms to the universal tool-handler contract (AGENTS §14): a valid blob (or no args) RETURNS the plain `{ status, count }` summary, while a malformed blob THROWS a `TOOL` `WorkflowError` and an over-deep / cyclic call THROWS a `DEPTH` one. The WIDENED authoring surface is covered end-to-end: `tool.parameters` advertises the FLAT shape (`{ name, steps: [{ name }] }`, with per-field `description`s) — NOT the nested definition; a flat blob and an ids-omitted nested blob each run to `{ status: 'completed', count: N }`; the full nested form still runs as the escape-hatch; a flat blob that can't expand throws `TOOL`; the embedded doc examples (`WORKFLOW_TOOL_FLAT_EXAMPLE` / `WORKFLOW_TOOL_NESTED_EXAMPLE`) each satisfy their contract (Rank-1 anti-drift). The load-bearing F2-WRAP proof runs the tool through a REAL `createToolManager()` and asserts the resulting `ToolResult` is SINGLE-LEVEL (success → `value` IS the plain summary, no nested `{ id, name, value }`; failure → a top-level `error`, no `value`), then feeds that result to `buildToolResult` to assert a failure maps to MCP `isError: true` (and a success to the plain summary text).
+- [`tests/src/core/WorkflowRunner.test.ts`](../../tests/src/core/WorkflowRunner.test.ts) — the PURE-engine runner end-to-end: phases-sequential / tasks-concurrent, a no-handler task auto-completing, the per-phase `concurrency` throttle, `bail: false` recording failures while finishing vs `bail: true` aborting on the first failure (incl. a fail-while-a-sibling-is-mid-flight), per-task `retries` recovering a divergent task while a no-retry sibling fails + a per-task `timeout` FAILING a parked leaf (never skipping it, the failure recorded under `bail: false`) + a retries+timeout attempt RECOVERING (attempt 1's deadline retries, attempt 2 `completes` — the recovered value kept) + a `bail: true` timeout-only fault deriving `failed` and halting a later phase + the sibling-fail-fast still SKIPPING a parked sibling (the timeout distinguisher does not break skip-on-fail-fast) + an omission-regression (neither field = today's behavior), the per-phase `bail` override (a strict phase halting under a graceful workflow / a graceful phase settling-all under a strict workflow / the `effectiveBail = phase.bail ?? workflow.bail` inheritance pair), the abort / timeout / budget fold (settling `stopped`), and dispatch by a task's own resolved `handler` (a plain function) — the tool/agent adapter dispatch coverage lives in the `@orkestrel/tool` package.
+- [`tests/src/core/factories.test.ts`](../../tests/src/core/factories.test.ts) — `createWorkflowContract` / `createWorkflow` / `restoreWorkflow` / `assertSnapshot` / `createWorkflowRunner` each return a working instance / value (a round-trip), and `assertSnapshot` rejecting an invalid snapshot with a `RESTORE` `WorkflowError`; `restoreWorkflow(snapshot, { functions })` resuming real work vs a bare `restoreWorkflow(snapshot)` staying declarative replay.
 - [`tests/src/core/stores/MemoryWorkflowStore.test.ts`](../../tests/src/core/stores/MemoryWorkflowStore.test.ts) — the in-memory store (W-d): a `set` → `get` round-trip returning the same `WorkflowSnapshot` and `restoreWorkflow`'ing an IDENTICAL live tree, for BOTH an all-pending snapshot (`createWorkflow(...).snapshot()`) and a real SETTLED one driven through `createWorkflowRunner().execute` (real `completed` statuses + recorded results); the driver-swap parity case (the retrieved payload survives `JSON.parse(JSON.stringify(...))` AND restores identically from the JSON-revived form — proving it persists unchanged across any JSON / SQLite / IndexedDB backend); `set` replacing under the same id; and `delete` (then `get` ⇒ `undefined`, an absent-id `delete` a no-op, an absent-id `get` ⇒ `undefined`). REAL data throughout (a real `WorkflowDefinition` + real `WorkflowFunction` handlers), no mocks.
 - [`tests/src/core/stores/DatabaseWorkflowStore.test.ts`](../../tests/src/core/stores/DatabaseWorkflowStore.test.ts) — the driver-pluggable twin (W-d): the SAME `WorkflowStoreInterface` contract over a REAL `databases` table (a memory driver), with the snapshot stored as one opaque JSON column — a `set` → `get` round-trip returning the same `WorkflowSnapshot` and `restoreWorkflow`'ing an IDENTICAL live tree (all-pending AND a real SETTLED snapshot driven through `createWorkflowRunner().execute`); `set` replacing under the same id; `delete` (+ absent-id `delete` no-op, absent-id `get` ⇒ `undefined`); and the driver-swap smoke (the default-driver factory builds an equivalent memory-backed store; two distinct workflow ids coexist without cross-contamination). REAL `WorkflowSnapshot` values throughout (a real `WorkflowDefinition` + real `WorkflowFunction` handlers), NO mocks.
 - [`tests/src/core/Runner.test.ts`](../../tests/src/core/Runner.test.ts) — `execute` runs every input and returns results in declared order (even with out-of-order completion); spawned siblings actually run and order after the declared units; nested spawns drain transitively; bounded concurrency caps handlers in flight; `retries` re-run a flaky unit; fail-fast (one unit throwing rejects `execute` AND fires the siblings' signals); `abort()` mid-run rejects `execute` and aborts every unit; one-shot (a second `execute` throws); `spawn` outside a run throws; empty `execute([])` resolves to `[]`; `active` / `stopped` reporting; idempotent `destroy`.
@@ -1243,7 +1139,7 @@ A successful run fires `start` → `unit`/`settle` per unit → `finish`. A fail
 ## See also
 
 - [`contract.md`](contract.md) — the shape DSL and `createContract` the workflow definition contract is built on, and the `Result` a `TaskResult` boxes.
-- `ToolManager` / `ToolInterface` (the future `@orkestrel/agent` package) — the OPT-IN `createToolFunction` adapter and `createWorkflowTool` use them, and its `AgentInterface` is what `createAgentFunction` wraps into a `WorkflowFunction`.
+- The `@orkestrel/tool` package — the authoring-tool / adapter layer EXTRACTED from this package: wrapping a `WorkflowDefinition` as an LLM-callable tool, and wrapping a registered tool or a live agent as a `WorkflowFunction` (the OPT-IN `createToolFunction` / `createAgentFunction` adapters + the depth/cycle guard). It depends on `@src/core` for `WorkflowError`, `createWorkflowContract`, and `WorkflowRunnerInterface`.
 - [`abort.md`](abort.md) · [`timeout.md`](timeout.md) · [`budget.md`](budget.md) — the run-level bounds the runner (`Runner` / `WorkflowRunner`) folds; the scheduler (pacing) is documented in this guide.
 - [`emitter.md`](emitter.md) — the typed §13 emitter each live entity owns.
 - [`AGENTS.md`](../../AGENTS.md) — the rules; §4.4 the `bail` boolean toggle, §10 the lifecycle vocabulary, §12 errors & `Result`, §14 totality, §22 documentation-as-contracts.
