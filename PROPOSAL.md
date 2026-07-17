@@ -31,16 +31,16 @@ Every candidate was evaluated against the conventions this package already estab
 
 All five candidates are published, plus the supporting packages they lean on:
 
-| Package | Version | One-liner |
-| --- | --- | --- |
-| `@orkestrel/terminal` | 0.0.1 | Headless prompt broker (park-as-Promise), SSE client bridge, raw-mode TTY driver |
-| `@orkestrel/database` | 0.0.3 | One query engine over pluggable drivers; a table is a contract |
-| `@orkestrel/server` | 0.0.4 | Typed HTTP server; composes the `@orkestrel/router` dispatcher behind a managed lifecycle |
-| `@orkestrel/reason` | 0.0.1 | Deterministic reasoning engine: quantitative / logical / symbolic / inferential |
-| `@orkestrel/browser` | 0.0.1 | CDP browser automation with an environment-agnostic core |
-| `@orkestrel/router` | 0.0.2 | The dispatcher the server consumes |
-| `@orkestrel/sse` | 0.0.1 | The event-stream parser the terminal client uses |
-| `@orkestrel/console` | 0.0.1 | Styler the terminal renders through |
+| Package               | Version | One-liner                                                                                 |
+| --------------------- | ------- | ----------------------------------------------------------------------------------------- |
+| `@orkestrel/terminal` | 0.0.1   | Headless prompt broker (park-as-Promise), SSE client bridge, raw-mode TTY driver          |
+| `@orkestrel/database` | 0.0.3   | One query engine over pluggable drivers; a table is a contract                            |
+| `@orkestrel/server`   | 0.0.4   | Typed HTTP server; composes the `@orkestrel/router` dispatcher behind a managed lifecycle |
+| `@orkestrel/reason`   | 0.0.1   | Deterministic reasoning engine: quantitative / logical / symbolic / inferential           |
+| `@orkestrel/browser`  | 0.0.1   | CDP browser automation with an environment-agnostic core                                  |
+| `@orkestrel/router`   | 0.0.2   | The dispatcher the server consumes                                                        |
+| `@orkestrel/sse`      | 0.0.1   | The event-stream parser the terminal client uses                                          |
+| `@orkestrel/console`  | 0.0.1   | Styler the terminal renders through                                                       |
 
 Tool's dependency set today is `agent` + `workflow` + `contract` only — every adopted
 candidate is a deliberate new dependency, which is one more reason to phase them.
@@ -49,13 +49,13 @@ candidate is a deliberate new dependency, which is one more reason to phase them
 
 ## 2. Ranking at a glance
 
-| # | Tool | Verdict | Why |
-| --- | --- | --- | --- |
-| 1 | **terminal** → prompt + answer tools | Build first | The broker's park-as-Promise is *exactly* "agents wait for each other without scheduling themselves"; the missing pieces (addressing, hub, HTTP spine) are precisely tool-layer work |
-| 2 | **database** → database tool | Build second | Cleanest fit: serializable criteria, contract-native schemas, fully in-memory testable, real migrate path for "make changes to them" |
-| 3 | **server** → server tool | Build third | Strong lifecycle surface (`start` resolves the bound port, drain, idempotent teardown); needs one design move — routes as data with the workflow `run`-string precedent — and two source verifications first |
-| 4 | **reason** → reason tool | Sleeper — ride along cheap | Not on the original list, but a deterministic scorer/judge with an audit `trace` is the perfect complement to the agent + workflow tools, and it is the most testable candidate of all |
-| 5 | **browser** → browser tool | Defer | Correct instinct: value lives in end-to-end automation against a real browser, which is environment-coupled and flaky; revisit after the others ship |
+| #   | Tool                                 | Verdict                    | Why                                                                                                                                                                                                          |
+| --- | ------------------------------------ | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | **terminal** → prompt + answer tools | Build first                | The broker's park-as-Promise is _exactly_ "agents wait for each other without scheduling themselves"; the missing pieces (addressing, hub, HTTP spine) are precisely tool-layer work                         |
+| 2   | **database** → database tool         | Build second               | Cleanest fit: serializable criteria, contract-native schemas, fully in-memory testable, real migrate path for "make changes to them"                                                                         |
+| 3   | **server** → server tool             | Build third                | Strong lifecycle surface (`start` resolves the bound port, drain, idempotent teardown); needs one design move — routes as data with the workflow `run`-string precedent — and two source verifications first |
+| 4   | **reason** → reason tool             | Sleeper — ride along cheap | Not on the original list, but a deterministic scorer/judge with an audit `trace` is the perfect complement to the agent + workflow tools, and it is the most testable candidate of all                       |
+| 5   | **browser** → browser tool           | Defer                      | Correct instinct: value lives in end-to-end automation against a real browser, which is environment-coupled and flaky; revisit after the others ship                                                         |
 
 ---
 
@@ -78,7 +78,7 @@ The broker is the mechanism this whole use case needs:
   and POSTs answers back, with replay-safe reconnect.
 
 What it deliberately does **not** ship is the interesting part: no HTTP spine, no
-multi-broker routing, no "ask *that* terminal" addressing. That gap is not a weakness —
+multi-broker routing, no "ask _that_ terminal" addressing. That gap is not a weakness —
 it is exactly the seam where the tool layer belongs.
 
 ### 3.2 Design — a hub, an ask tool, an answer tool
@@ -107,7 +107,13 @@ export interface PromptHubInterface {
 	add(name: string): void
 	broker(name: string): PromptInterface | undefined
 	brokers(): readonly string[]
-	ask(from: string, to: string, form: PromptType, message: string, options?: AskOptions): Promise<PromptValue>
+	ask(
+		from: string,
+		to: string,
+		form: PromptType,
+		message: string,
+		options?: AskOptions,
+	): Promise<PromptValue>
 	pending(to?: string): readonly AddressedPrompt[]
 	answer(to: string, id: string, value: unknown): boolean
 	remove(name: string): void
@@ -205,12 +211,15 @@ A human attaches with the terminal package's own bridge, no tool code involved:
 ```ts
 import { createTerminal, createPromptClient } from '@orkestrel/terminal/server'
 
-const client = createPromptClient({ url: `http://localhost:${port}/prompts/reviewer/stream`, terminal: createTerminal() })
+const client = createPromptClient({
+	url: `http://localhost:${port}/prompts/reviewer/stream`,
+	terminal: createTerminal(),
+})
 await client.connect()
 // agent questions addressed to 'reviewer' now render on this TTY; answers POST back
 ```
 
-That last piece is worth pausing on: the *same* mechanism is agent↔agent and
+That last piece is worth pausing on: the _same_ mechanism is agent↔agent and
 agent↔human. An agent asking another agent and an agent asking a person are one code
 path — the only difference is what answers: an answer tool or a keyboard.
 
@@ -218,7 +227,7 @@ path — the only difference is what answers: an answer tool or a keyboard.
 
 Agent runtimes block on tool calls. If A parks an ask on B while B parks an ask on A,
 both are blocked until the timeout backstop fires. The hub can do better than the
-backstop: on `ask(from, to)`, if `pending(from)` already holds a prompt *from* `to`,
+backstop: on `ask(from, to)`, if `pending(from)` already holds a prompt _from_ `to`,
 fail fast with `AgentToolError` — "reciprocal prompt <id> from '<to>' is parked; answer
 it first". This is the depth/ancestry guard philosophy applied to waiting instead of
 recursion: turn a silent deadlock into an immediate, actionable error. Timeouts remain
@@ -230,7 +239,7 @@ walked away).
 - **Store slot** — persist-on-settle like the workflow tool: an `AddressedPrompt` snapshot
   written on park, updated on answer (with the value) and on expire. Standard twins:
   `createMemoryPromptStore()` / `createDatabasePromptStore(driver)`. Honest caveat: a parked
-  *Promise* cannot survive a restart — the store gives audit and visibility, not resumption.
+  _Promise_ cannot survive a restart — the store gives audit and visibility, not resumption.
 - **Testability** — excellent. The broker is headless and takes an injected `timer`, so
   expiry is deterministic in tests; the hub and both tools test fully in-process with no
   TTY and no HTTP. The SSE mount tests against an ephemeral `@orkestrel/server` instance.
@@ -277,7 +286,7 @@ export interface DatabaseDefinition {
 // TableSpec — the serializable column DSL the agent speaks; a helper expands it
 // to real contract shapes, so ContractShape itself never has to cross the wire:
 // { contacts: { columns: { id: 'string', name: 'string', age: { type: 'integer', optional: true } } } }
-export type ColumnSpec = ColumnKind | { readonly type: ColumnKind, readonly optional?: boolean }
+export type ColumnSpec = ColumnKind | { readonly type: ColumnKind; readonly optional?: boolean }
 export type ColumnKind = 'string' | 'number' | 'integer' | 'boolean' | 'json'
 ```
 
@@ -293,28 +302,31 @@ export function createDatabaseTool(options?: DatabaseToolOptions): ToolInterface
 export interface DatabaseToolOptions {
 	name?: string
 	description?: string
-	store?: DatabaseDefinitionStoreInterface   // definitions, not row data
-	drivers?: Readonly<Record<string, () => DriverInterface>>  // default: memory only
+	store?: DatabaseDefinitionStoreInterface // definitions, not row data
+	drivers?: Readonly<Record<string, () => DriverInterface>> // default: memory only
 }
 ```
 
 Operations (one tool, an operation union — the workspace-tool precedent):
 
-| Operation | Arguments | Behavior |
-| --- | --- | --- |
-| `create` | `{ id, tables, driver?, path?, keys? }` | Mint definition, open handle, persist definition |
-| `tables` | `{ id }` | List tables + JSON Schema per table (from `table.contract.schema`) |
-| `add` / `set` / `update` / `remove` | `{ id, table, key?, row?/changes? }` | Keyed writes; validation/conflict errors surface typed |
-| `get` | `{ id, table, key }` | One row or undefined |
-| `records` / `count` | `{ id, table, criteria? }` | Serializable `Criteria` straight through |
-| `migrate` | `{ id, tables }` | Re-declare; engine diffs and applies; returns the `Migration` plan |
-| `export` | `{ id }` | Portable schema + data description |
-| `destroy` | `{ id }` | Close handle, delete definition |
+| Operation                           | Arguments                               | Behavior                                                           |
+| ----------------------------------- | --------------------------------------- | ------------------------------------------------------------------ |
+| `create`                            | `{ id, tables, driver?, path?, keys? }` | Mint definition, open handle, persist definition                   |
+| `tables`                            | `{ id }`                                | List tables + JSON Schema per table (from `table.contract.schema`) |
+| `add` / `set` / `update` / `remove` | `{ id, table, key?, row?/changes? }`    | Keyed writes; validation/conflict errors surface typed             |
+| `get`                               | `{ id, table, key }`                    | One row or undefined                                               |
+| `records` / `count`                 | `{ id, table, criteria? }`              | Serializable `Criteria` straight through                           |
+| `migrate`                           | `{ id, tables }`                        | Re-declare; engine diffs and applies; returns the `Migration` plan |
+| `export`                            | `{ id }`                                | Portable schema + data description                                 |
+| `destroy`                           | `{ id }`                                | Close handle, delete definition                                    |
 
 Usage:
 
 ```ts
-const database = createDatabaseTool({ store, drivers: { sqlite: () => createSQLiteDriver('./agents.db') } })
+const database = createDatabaseTool({
+	store,
+	drivers: { sqlite: () => createSQLiteDriver('./agents.db') },
+})
 const agent = createAgent({ provider, tools: [database] })
 
 // the agent, over a few turns:
@@ -365,33 +377,39 @@ export interface ServerToolOptions {
 	name?: string
 	description?: string
 	store?: ServerDefinitionStoreInterface
-	functions?: Readonly<Record<string, RouteHandler>>   // named handlers, the run-string precedent
+	functions?: Readonly<Record<string, RouteHandler>> // named handlers, the run-string precedent
 }
 
 // RouteSpec — serializable; exactly one of response / handler
 export interface RouteSpec {
 	readonly method: string
 	readonly path: string
-	readonly response?: { readonly status?: number, readonly headers?: Readonly<Record<string, string>>, readonly body?: unknown }
-	readonly handler?: string   // name resolved from options.functions at mount time
+	readonly response?: {
+		readonly status?: number
+		readonly headers?: Readonly<Record<string, string>>
+		readonly body?: unknown
+	}
+	readonly handler?: string // name resolved from options.functions at mount time
 }
 ```
 
 Operations:
 
-| Operation | Arguments | Behavior |
-| --- | --- | --- |
-| `create` | `{ id, routes?, host?, port? }` | Build dispatcher, mount routes, construct server (port omitted → `discoverPort` at start) |
-| `start` | `{ id }` | `await server.start()` → returns the bound port |
-| `route` | `{ id, route }` | `dispatcher.add(...)` on the owned dispatcher |
-| `inspect` | `{ id }` | `status`, `port`, route list, recent `response` events (ring buffer off the emitter) |
-| `list` | `{}` | All registered servers with status + port |
-| `stop` / `destroy` | `{ id }` | Graceful drain / terminal teardown |
+| Operation          | Arguments                       | Behavior                                                                                  |
+| ------------------ | ------------------------------- | ----------------------------------------------------------------------------------------- |
+| `create`           | `{ id, routes?, host?, port? }` | Build dispatcher, mount routes, construct server (port omitted → `discoverPort` at start) |
+| `start`            | `{ id }`                        | `await server.start()` → returns the bound port                                           |
+| `route`            | `{ id, route }`                 | `dispatcher.add(...)` on the owned dispatcher                                             |
+| `inspect`          | `{ id }`                        | `status`, `port`, route list, recent `response` events (ring buffer off the emitter)      |
+| `list`             | `{}`                            | All registered servers with status + port                                                 |
+| `stop` / `destroy` | `{ id }`                        | Graceful drain / terminal teardown                                                        |
 
 Usage — an agent stubs a webhook endpoint to test another system against:
 
 ```ts
-const server = createServerTool({ functions: { echo: (request, state) => ({ status: 200, body: request.body }) } })
+const server = createServerTool({
+	functions: { echo: (request, state) => ({ status: 200, body: request.body }) },
+})
 const agent = createAgent({ provider, tools: [server] })
 
 // server { operation: 'create', id: 'hook', routes: [
@@ -424,17 +442,20 @@ symbolic equation solving, inferential fact derivation with proof trees — wher
 result carries `success`, accumulated `errors`, and a human-readable `trace`.
 
 Why that matters here: agents are non-deterministic, and the line keeps needing
-*deterministic* judgment — acceptance gates in workflows, judge panels, scoring
+_deterministic_ judgment — acceptance gates in workflows, judge panels, scoring
 candidates against a rubric. A reason tool turns "the model felt good about it" into
 "rubric `release-gate` scored 0.83, trace attached", reproducibly.
 
 ```ts
-export function createReasonTool(reason: ReasonInterface, options?: ReasonToolOptions): ToolInterface
+export function createReasonTool(
+	reason: ReasonInterface,
+	options?: ReasonToolOptions,
+): ToolInterface
 
 export interface ReasonToolOptions {
 	name?: string
 	description?: string
-	store?: DefinitionStoreInterface   // reusable rubrics/rulebooks by id
+	store?: DefinitionStoreInterface // reusable rubrics/rulebooks by id
 }
 
 // arguments — exactly one of definition/definitionId, exactly one of subject/subjects
@@ -445,7 +466,7 @@ export interface ReasonToolOptions {
 
 The handler is nearly trivial — `reason.validate(definition)` then
 `reason.reason(subject, definition)` — because the engine is total: malformed input
-yields a failure *result* with errors, not a throw, so the model always gets something
+yields a failure _result_ with errors, not a throw, so the model always gets something
 it can read. `isDefinition`/`isSubject` gate stored and inline payloads without `as`.
 
 Usage:
@@ -469,7 +490,7 @@ round is in flight — it will be the smallest diff of any tool in the package.
 
 ## 7. Browser — defer, deliberately
 
-The instinct in the request is correct. The browser package's *core* is admirably
+The instinct in the request is correct. The browser package's _core_ is admirably
 testable (CDP client, context, page over an injected `CDPTransportInterface` — unit
 tests can mock the transport completely), but a browser **tool**'s value is real
 automation: launch, navigate, read, click. That drags in a real Chromium, timing
@@ -503,7 +524,7 @@ database and terminal packages' own core/server precedent. Core never imports no
 **One error, richer context.** `AgentToolError` stays the package error. Underlying typed
 errors (`TerminalError`, `DatabaseError`, `HTTPError`, `ReasonError`) are caught, and
 their code + message travel in `AgentToolError`'s context so the model reads the real
-reason. New codes only where a new *kind* of failure exists — the reciprocal-prompt
+reason. New codes only where a new _kind_ of failure exists — the reciprocal-prompt
 guard is the one candidate ('CYCLE' fits the existing depth/ancestry family).
 
 **Every tool ships `summary` + `description`.** The describe tool already advertises
@@ -514,8 +535,8 @@ for more. No MCP changes, again.
 definitions, server definitions, reason definitions: each gets
 `createMemoryXxxStore()` / `createDatabaseXxxStore(driver)` and an `isXxxSnapshot` guard.
 Live handles (open databases, listening servers, parked Promises) are never stored —
-definitions are, and managers reopen lazily. That line — *store definitions, re-mint
-handles* — is the single sentence that answers every statefulness question above.
+definitions are, and managers reopen lazily. That line — _store definitions, re-mint
+handles_ — is the single sentence that answers every statefulness question above.
 
 ---
 

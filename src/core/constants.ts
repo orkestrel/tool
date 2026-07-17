@@ -268,3 +268,61 @@ export const DESCRIBE_TOOL_SUMMARY = 'Return the full description of a named reg
  */
 export const DESCRIBE_TOOL_DESCRIPTION =
 	'Return the full description of a registered tool by its name. Required: name - the registered tool name (see another tool listing for available names).'
+
+/**
+ * The name {@link import('./factories.js').createPromptTool} advertises by default — the key a
+ * model calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ */
+export const PROMPT_TOOL_NAME = 'ask'
+
+/**
+ * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createPromptTool}
+ * advertises in place of {@link PROMPT_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
+ * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
+ * for the full teaching description; the full text stays retrievable via
+ * {@link import('./factories.js').createDescribeTool}.
+ */
+export const PROMPT_TOOL_SUMMARY =
+	"Ask another terminal a question and BLOCK until it answers; the call resolves with the answered value. Call describe('ask') for the required fields."
+
+export const PROMPT_TOOL_DESCRIPTION = [
+	'Ask another terminal a question and block until it answers. This call does not return until the addressed terminal answers, or the prompt fails.',
+	'',
+	'Required:',
+	'  to      - the terminal name to ask.',
+	'  form    - the prompt kind: one of "input", "password", "confirm", "select", "checkbox", "editor".',
+	'  message - the question shown to the answering terminal.',
+	'Optional:',
+	'  options - form-specific options (e.g. choices for "select"/"checkbox").',
+	'A cycle (two terminals asking each other) or an expired prompt fails the call with a typed error.',
+	'Example:',
+	JSON.stringify({ to: 'reviewer', form: 'confirm', message: 'Approve the release?' }),
+].join('\n')
+
+/**
+ * The name {@link import('./factories.js').createAnswerTool} advertises by default — the key a
+ * model calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ */
+export const ANSWER_TOOL_NAME = 'answer'
+
+/**
+ * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createAnswerTool}
+ * advertises in place of {@link ANSWER_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
+ * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
+ * for the full teaching description; the full text stays retrievable via
+ * {@link import('./factories.js').createDescribeTool}.
+ */
+export const ANSWER_TOOL_SUMMARY =
+	"List prompts addressed to this terminal, or answer one by id. Call describe('answer') for the required fields."
+
+export const ANSWER_TOOL_DESCRIPTION = [
+	'List the prompts currently addressed to this terminal, or answer one of them by id. Every call is ONE operation, chosen by the "operation" field.',
+	'',
+	'Operations:',
+	'- pending { "operation": "pending" } — list every prompt currently addressed to this terminal (id, form, message, options, time).',
+	'- answer  { "operation": "answer", "id": "<prompt id>", "value": <answer value> } — answer the prompt with that id; "value" must match the prompt\'s form (a string for "input"/"password"/"editor", a boolean for "confirm", a choice for "select", an array of choices for "checkbox").',
+	'Example — list pending prompts:',
+	JSON.stringify({ operation: 'pending' }),
+	'Example — answer one:',
+	JSON.stringify({ operation: 'answer', id: 'abc123', value: true }),
+].join('\n')

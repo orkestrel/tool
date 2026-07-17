@@ -3,6 +3,7 @@ import type {
 	WorkspaceManagerInterface,
 	WorkspaceStoreInterface,
 } from '@orkestrel/agent'
+import type { TerminalManagerInterface } from '@orkestrel/terminal'
 import type { WorkflowRunnerInterface, WorkflowStoreInterface } from '@orkestrel/workflow'
 
 // Tool-package types — one interface per `create*Tool` / `create*Function` factory (AGENTS §5:
@@ -342,8 +343,15 @@ export interface AgentToolArguments {
  * `TOOL` — malformed / unresolvable call args (a missing `task`, no resolvable `provider`).
  * `DEPTH` — the delegation would exceed {@link import('./constants.js').AGENT_TOOL_DEPTH}, or
  * the resolved agent is already an ancestor (a cycle).
+ * `DEADLOCK` — an `ask` call ({@link import('./factories.js').createPromptTool}) would form a
+ * prompt cycle (`TerminalManagerInterface.ask`, `@orkestrel/terminal`, rejects with its own
+ * `TerminalError('DEADLOCK')`, re-surfaced here).
+ * `EXPIRE` — the addressed prompt expired before it was answered.
+ * `ANSWER` — {@link import('./factories.js').createAnswerTool}'s answer call failed to apply
+ * (an unknown prompt id, a rejected value, or the terminal itself unknown —
+ * `TerminalAnswerResult.error`, `@orkestrel/terminal`).
  */
-export type AgentToolErrorCode = 'TOOL' | 'DEPTH'
+export type AgentToolErrorCode = 'TOOL' | 'DEPTH' | 'DEADLOCK' | 'EXPIRE' | 'ANSWER'
 
 /**
  * The FLAT args {@link import('./factories.js').createDescribeTool} accepts — the registered
@@ -355,4 +363,47 @@ export type AgentToolErrorCode = 'TOOL' | 'DEPTH'
  */
 export interface DescribeToolArguments {
 	readonly name: string
+}
+
+/**
+ * Options for {@link import('./factories.js').createPromptTool} — the live
+ * {@link TerminalManagerInterface} (`@orkestrel/terminal`) to `ask` through, the terminal name
+ * `from`, and the advertised tool overrides.
+ *
+ * @remarks
+ * - `manager` — the terminal manager whose `ask(from, to, form, options)` the tool's handler
+ *   calls; BLOCKS the calling agent turn until the addressed terminal answers (or the ask
+ *   rejects — a cycle throws `TerminalError('DEADLOCK')`, re-surfaced as a typed `DEADLOCK`
+ *   {@link import('./errors.js').AgentToolError}; an expired prompt re-surfaces as `EXPIRE`).
+ * - `from` — the terminal identity this tool asks AS; the model supplies the `to` target and the
+ *   prompt form per call.
+ * - `name` / `description` — advertised tool overrides; default to
+ *   {@link import('./constants.js').PROMPT_TOOL_NAME} / {@link import('./constants.js').PROMPT_TOOL_DESCRIPTION}.
+ */
+export interface PromptToolOptions {
+	readonly manager: TerminalManagerInterface
+	readonly from: string
+	readonly name?: string
+	readonly description?: string
+}
+
+/**
+ * Options for {@link import('./factories.js').createAnswerTool} — the live
+ * {@link TerminalManagerInterface} (`@orkestrel/terminal`) to list / answer prompts through, the
+ * terminal name `to`, and the advertised tool overrides.
+ *
+ * @remarks
+ * - `manager` — the terminal manager whose `pending(to)` / `answer(to, id, value)` the tool's
+ *   handler calls — `pending` lists the prompts currently addressed to `to`, `answer` resolves
+ *   one by `id`. A failed `answer` (`TerminalAnswerResult.error`) re-surfaces as a typed
+ *   `ANSWER` {@link import('./errors.js').AgentToolError}.
+ * - `to` — the terminal identity this tool lists / answers prompts FOR.
+ * - `name` / `description` — advertised tool overrides; default to
+ *   {@link import('./constants.js').ANSWER_TOOL_NAME} / {@link import('./constants.js').ANSWER_TOOL_DESCRIPTION}.
+ */
+export interface AnswerToolOptions {
+	readonly manager: TerminalManagerInterface
+	readonly to: string
+	readonly name?: string
+	readonly description?: string
 }

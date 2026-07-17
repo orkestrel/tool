@@ -14,6 +14,8 @@ import type {
 import type {
 	AgentFunctionOptions,
 	AgentToolOptions,
+	AnswerToolOptions,
+	PromptToolOptions,
 	WorkflowDraft,
 	WorkflowSteps,
 	WorkflowToolOptions,
@@ -28,16 +30,23 @@ import {
 	WorkspaceError,
 } from '@orkestrel/agent'
 import { createContract, schemaToParameters } from '@orkestrel/contract'
+import { isTerminalError } from '@orkestrel/terminal'
 import { createWorkflowContract, WorkflowError } from '@orkestrel/workflow'
 import {
 	AGENT_TOOL_DEPTH,
 	AGENT_TOOL_DESCRIPTION,
 	AGENT_TOOL_NAME,
 	AGENT_TOOL_SUMMARY,
+	ANSWER_TOOL_DESCRIPTION,
+	ANSWER_TOOL_NAME,
+	ANSWER_TOOL_SUMMARY,
 	DESCRIBE_TOOL_DESCRIPTION,
 	DESCRIBE_TOOL_NAME,
 	DESCRIBE_TOOL_SUMMARY,
 	MAX_WORKFLOW_DEPTH,
+	PROMPT_TOOL_DESCRIPTION,
+	PROMPT_TOOL_NAME,
+	PROMPT_TOOL_SUMMARY,
 	WORKFLOW_TOOL_DESCRIPTION,
 	WORKFLOW_TOOL_NAME,
 	WORKFLOW_TOOL_SUMMARY,
@@ -48,14 +57,18 @@ import {
 import { AgentToolError } from './errors.js'
 import {
 	agentTag,
+	coerceAnswer,
 	completeDraft,
 	expandSteps,
+	terminalToolCode,
 	workflowTag,
 	workflowToolSummary,
 } from './helpers.js'
 import {
 	agentToolShape,
+	answerToolShape,
 	describeToolShape,
+	promptToolShape,
 	workflowDraftShape,
 	workflowStepsShape,
 	workspaceToolShape,
@@ -665,6 +678,214 @@ export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
 				throw new AgentToolError('TOOL', `unknown tool '${call.name}'`, { name: call.name })
 			}
 			return tool.description ?? tool.summary ?? '<no description>'
+		},
+	})
+}
+
+/**
+ * Build an LLM-callable prompt tool — the ASK side of the terminal seam. Asks
+ * {@link import('./types.js').PromptToolOptions.to} a question and BLOCKS until it answers,
+ * returning the resolved answer value.
+ *
+ * @remarks
+ * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * {@link import('./shapers.js').promptToolShape}, dispatches to the matching
+ * `TerminalManagerInterface.ask` overload (`@orkestrel/terminal`) for the call's `form`, and
+ * RETURNS the resolved answer on success. `from` is FIXED at construction
+ * ({@link import('./types.js').PromptToolOptions.from}) — never read from the model-supplied
+ * args — so a model cannot spoof which terminal is asking. A prompt CYCLE rejects with
+ * `TerminalError('DEADLOCK')`, re-surfaced as a typed `DEADLOCK`
+ * {@link import('./errors.js').AgentToolError}; an expired prompt re-surfaces as `EXPIRE`; an
+ * unknown `to` (or any other `TerminalError`) re-surfaces as `TOOL`, naming the unknown terminal
+ * plus the known ones (`manager.terminals()`).
+ *
+ * @param options - The live manager, the fixed `from` identity, and advertised overrides (see
+ *   {@link import('./types.js').PromptToolOptions})
+ * @returns A `ToolInterface` (named {@link import('./constants.js').PROMPT_TOOL_NAME} by default)
+ *
+ * @example
+ * ```ts
+ * import { createPromptTool } from '@src/core'
+ * import { createTerminalManager, createToolManager } from '@orkestrel/terminal'
+ *
+ * const manager = createTerminalManager()
+ * manager.add('agent')
+ * manager.add('reviewer')
+ * const tool = createPromptTool({ manager, from: 'agent' })
+ * const tools = createToolManager()
+ * tools.add(tool) // the agent can now ask 'reviewer' and block for the answer
+ * ```
+ */
+export function createPromptTool(options: PromptToolOptions): ToolInterface {
+	const contract = createContract(promptToolShape)
+	const parameters = schemaToParameters(contract.schema)
+	return createTool({
+		name: options.name ?? PROMPT_TOOL_NAME,
+		description: options.description ?? PROMPT_TOOL_DESCRIPTION,
+		summary: PROMPT_TOOL_SUMMARY,
+		parameters,
+		execute: async (args) => {
+			const call = contract.parse(args)
+			if (call === undefined) {
+				throw new AgentToolError('TOOL', 'malformed ask call', { args })
+			}
+			if (
+				(call.form === 'select' || call.form === 'checkbox') &&
+				(call.choices ?? []).length === 0
+			) {
+				throw new AgentToolError('TOOL', 'select/checkbox requires at least one choice', {
+					to: call.to,
+					form: call.form,
+				})
+			}
+			try {
+				switch (call.form) {
+					case 'input':
+						return await options.manager.ask(options.from, call.to, call.form, {
+							message: call.message,
+							...(call.default === undefined ? {} : { default: call.default }),
+							...(call.validate === undefined ? {} : { validate: call.validate }),
+						})
+					case 'editor':
+						return await options.manager.ask(options.from, call.to, call.form, {
+							message: call.message,
+							...(call.default === undefined ? {} : { default: call.default }),
+							...(call.validate === undefined ? {} : { validate: call.validate }),
+						})
+					case 'password':
+						return await options.manager.ask(options.from, call.to, call.form, {
+							message: call.message,
+							...(call.mask === undefined ? {} : { mask: call.mask }),
+							...(call.validate === undefined ? {} : { validate: call.validate }),
+						})
+					case 'confirm':
+						return await options.manager.ask(options.from, call.to, call.form, {
+							message: call.message,
+							...(call.default === undefined ? {} : { default: call.default === 'true' }),
+						})
+					case 'select':
+						return await options.manager.ask(options.from, call.to, call.form, {
+							message: call.message,
+							choices: call.choices ?? [],
+							...(call.default === undefined ? {} : { default: call.default }),
+						})
+					case 'checkbox':
+						return await options.manager.ask(options.from, call.to, call.form, {
+							message: call.message,
+							choices: call.choices ?? [],
+							...(call.min === undefined ? {} : { min: call.min }),
+							...(call.max === undefined ? {} : { max: call.max }),
+						})
+				}
+			} catch (error) {
+				const code = terminalToolCode(error)
+				if (code === undefined) throw error
+				if (code === 'DEADLOCK') {
+					throw new AgentToolError(
+						'DEADLOCK',
+						`asking '${call.to}' would form a prompt cycle`,
+						isTerminalError(error) ? error.context : { from: options.from, to: call.to },
+					)
+				}
+				if (code === 'EXPIRE') {
+					throw new AgentToolError(
+						'EXPIRE',
+						`prompt to '${call.to}' expired before it was answered`,
+						{
+							to: call.to,
+						},
+					)
+				}
+				if (isTerminalError(error) && error.code === 'TARGET') {
+					throw new AgentToolError('TOOL', `unknown terminal '${call.to}'`, {
+						to: call.to,
+						known: options.manager.terminals(),
+					})
+				}
+				throw new AgentToolError('TOOL', `asking '${call.to}' failed`, { to: call.to })
+			}
+		},
+	})
+}
+
+/**
+ * Build an LLM-callable answer tool — the ANSWER side of the terminal seam. Lists the prompts
+ * currently addressed to {@link import('./types.js').AnswerToolOptions.to}, or answers one of
+ * them by id.
+ *
+ * @remarks
+ * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * {@link import('./shapers.js').answerToolShape} (discriminated by `operation`). `'pending'`
+ * returns a compact list (`{ id, from, form, message }`) of every prompt currently addressed to
+ * `to` (`TerminalManagerInterface.pending`, `@orkestrel/terminal`). `'answer'` looks the prompt
+ * up by `id` (an unknown id throws a typed `ANSWER` {@link import('./errors.js').AgentToolError}),
+ * normalizes the model-supplied `value` to the prompt's own form
+ * ({@link import('./helpers.js').coerceAnswer}), and applies it via
+ * `TerminalManagerInterface.answer` — a rejected / unknown / unresolvable outcome
+ * (`TerminalAnswerResult.error`) re-surfaces as a typed `ANSWER` `AgentToolError`; success returns
+ * `{ answered: id }`. `to` is FIXED at construction
+ * ({@link import('./types.js').AnswerToolOptions.to}) — never read from the model-supplied args —
+ * so a model cannot spoof which terminal it is answering for. Concurrent answerers racing on one
+ * endpoint are FIRST-WRITE-WINS — a late answer to an already-settled prompt returns a typed
+ * `ANSWER` `AgentToolError` (surfaced as a 422 over HTTP).
+ *
+ * @param options - The live manager, the fixed `to` identity, and advertised overrides (see
+ *   {@link import('./types.js').AnswerToolOptions})
+ * @returns A `ToolInterface` (named {@link import('./constants.js').ANSWER_TOOL_NAME} by default)
+ *
+ * @example
+ * ```ts
+ * import { createAnswerTool } from '@src/core'
+ * import { createTerminalManager, createToolManager } from '@orkestrel/terminal'
+ *
+ * const manager = createTerminalManager()
+ * manager.add('reviewer')
+ * const tool = createAnswerTool({ manager, to: 'reviewer' })
+ * const tools = createToolManager()
+ * tools.add(tool) // the reviewer terminal can now list/answer prompts addressed to it
+ * ```
+ */
+export function createAnswerTool(options: AnswerToolOptions): ToolInterface {
+	const contract = createContract(answerToolShape)
+	const parameters = schemaToParameters(contract.schema)
+	return createTool({
+		name: options.name ?? ANSWER_TOOL_NAME,
+		description: options.description ?? ANSWER_TOOL_DESCRIPTION,
+		summary: ANSWER_TOOL_SUMMARY,
+		parameters,
+		execute: async (args) => {
+			const call = contract.parse(args)
+			if (call === undefined) {
+				throw new AgentToolError('TOOL', 'malformed answer call', { args })
+			}
+			if (call.operation === 'pending') {
+				return options.manager.pending(options.to).map((prompt) => ({
+					id: prompt.id,
+					from: prompt.from,
+					form: prompt.form,
+					message: prompt.message,
+				}))
+			}
+			const prompt = options.manager.pending(options.to).find((entry) => entry.id === call.id)
+			if (prompt === undefined) {
+				throw new AgentToolError('ANSWER', `unknown prompt '${call.id}'`, {
+					id: call.id,
+					reason: 'unknown',
+				})
+			}
+			const coerced = coerceAnswer(prompt.form, call.value)
+			const result = options.manager.answer(options.to, call.id, coerced)
+			if (!result.success) {
+				throw new AgentToolError(
+					'ANSWER',
+					`failed to answer prompt '${call.id}': ${result.error}`,
+					{
+						id: call.id,
+						reason: result.error,
+					},
+				)
+			}
+			return { answered: call.id }
 		},
 	})
 }

@@ -17,8 +17,11 @@ import type { AgentToolErrorCode } from './types.js'
 /**
  * Thrown by {@link import('./factories.js').createAgentTool}'s and
  * {@link import('./factories.js').createDescribeTool}'s handlers on every failure path — a
- * malformed / unresolvable call or an unknown tool name (`TOOL`), or a delegation that would
- * exceed the configured depth bound or re-enter an ancestor (`DEPTH`).
+ * malformed / unresolvable call or an unknown tool name (`TOOL`), a delegation that would
+ * exceed the configured depth bound or re-enter an ancestor (`DEPTH`), a prompt cycle
+ * (`DEADLOCK`), a prompt that expired before it was answered (`EXPIRE`), or an answer that
+ * failed to apply (`ANSWER`) — the last three thrown by
+ * {@link import('./factories.js').createPromptTool} / {@link import('./factories.js').createAnswerTool}.
  *
  * @remarks
  * Carries a machine-readable `code` (see {@link import('./types.js').AgentToolErrorCode}) and

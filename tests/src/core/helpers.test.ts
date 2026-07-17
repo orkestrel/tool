@@ -7,13 +7,16 @@ import type {
 } from '@orkestrel/workflow'
 import {
 	agentTag,
+	coerceAnswer,
 	completeDraft,
 	completePhaseDraft,
 	completeTaskDraft,
 	expandSteps,
+	terminalToolCode,
 	workflowTag,
 	workflowToolSummary,
 } from '@src/core'
+import { TerminalError } from '@orkestrel/terminal'
 import {
 	buildPhaseContext,
 	buildTaskContext,
@@ -198,5 +201,56 @@ describe('expandSteps — flatten a steps blob into a one-task-phase-per-step de
 		const definition: WorkflowDefinition = expandSteps({ steps: [] })
 		expect(createWorkflowContract().is(definition)).toBe(true)
 		expect(definition.phases).toEqual([])
+	})
+})
+
+describe('coerceAnswer — normalize an LLM-supplied answer to its prompt form', () => {
+	it('confirm: passes a boolean through and coerces "true"/"false" strings', () => {
+		expect(coerceAnswer('confirm', true)).toBe(true)
+		expect(coerceAnswer('confirm', false)).toBe(false)
+		expect(coerceAnswer('confirm', 'true')).toBe(true)
+		expect(coerceAnswer('confirm', 'False')).toBe(false)
+		expect(coerceAnswer('confirm', 'yes')).toBe(true)
+		expect(coerceAnswer('confirm', '')).toBe(false)
+	})
+
+	it('checkbox: passes an array through, splits a comma-separated string, wraps a single string', () => {
+		expect(coerceAnswer('checkbox', ['a', 'b'])).toEqual(['a', 'b'])
+		expect(coerceAnswer('checkbox', 'a,b')).toEqual(['a', 'b'])
+		expect(coerceAnswer('checkbox', 'a, b , c')).toEqual(['a', 'b', 'c'])
+		expect(coerceAnswer('checkbox', 'solo')).toEqual(['solo'])
+	})
+
+	it('input/password/select/editor: passes a string through, stringifies a scalar, blanks an object', () => {
+		expect(coerceAnswer('input', 'hi')).toBe('hi')
+		expect(coerceAnswer('password', 'hi')).toBe('hi')
+		expect(coerceAnswer('select', 'hi')).toBe('hi')
+		expect(coerceAnswer('editor', 'hi')).toBe('hi')
+		expect(coerceAnswer('input', 42)).toBe('42')
+		expect(coerceAnswer('input', { a: 1 })).toBe('')
+		expect(coerceAnswer('input', ['a'])).toBe('')
+	})
+
+	it('is deterministic — same form/value always yields the same result', () => {
+		expect(coerceAnswer('checkbox', 'x,y')).toEqual(coerceAnswer('checkbox', 'x,y'))
+	})
+})
+
+describe('terminalToolCode — classify a caught error into an AgentToolErrorCode', () => {
+	it('maps DEADLOCK and EXPIRE to their own code', () => {
+		expect(terminalToolCode(new TerminalError('DEADLOCK', 'cycle'))).toBe('DEADLOCK')
+		expect(terminalToolCode(new TerminalError('EXPIRE', 'timed out'))).toBe('EXPIRE')
+	})
+
+	it('maps every other TerminalErrorCode to the generic TOOL code', () => {
+		expect(terminalToolCode(new TerminalError('TARGET', 'unknown terminal'))).toBe('TOOL')
+		expect(terminalToolCode(new TerminalError('CANCEL', 'aborted'))).toBe('TOOL')
+		expect(terminalToolCode(new TerminalError('DRIVER', 'io failure'))).toBe('TOOL')
+	})
+
+	it('returns undefined for a non-TerminalError value', () => {
+		expect(terminalToolCode(new Error('plain'))).toBeUndefined()
+		expect(terminalToolCode('nope')).toBeUndefined()
+		expect(terminalToolCode(undefined)).toBeUndefined()
 	})
 })

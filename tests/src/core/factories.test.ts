@@ -2,6 +2,7 @@ import type { AgentToolArguments } from '@src/core'
 import type { ToolResult } from '@orkestrel/agent'
 import type { WorkflowDraft } from '@src/core'
 import type { TaskContext, TaskControllerInterface, WorkflowDefinition } from '@orkestrel/workflow'
+import type { TerminalManagerInterface, TimerCancel, TimerHandler } from '@orkestrel/terminal'
 import {
 	buildToolResult,
 	createAgent,
@@ -21,9 +22,12 @@ import {
 import {
 	AGENT_TOOL_DEPTH,
 	AGENT_TOOL_SUMMARY,
+	ANSWER_TOOL_NAME,
 	createAgentFunction,
 	createAgentTool,
+	createAnswerTool,
 	createDescribeTool,
+	createPromptTool,
 	createToolFunction,
 	createWorkflowDraftContract,
 	createWorkflowTool,
@@ -31,12 +35,14 @@ import {
 	DESCRIBE_TOOL_NAME,
 	isAgentToolError,
 	MAX_WORKFLOW_DEPTH,
+	PROMPT_TOOL_NAME,
 	WORKFLOW_TOOL_DESCRIPTION,
 	WORKFLOW_TOOL_NAME,
 	WORKFLOW_TOOL_SUMMARY,
 	WORKSPACE_TOOL_DESCRIPTION,
 	WORKSPACE_TOOL_SUMMARY,
 } from '@src/core'
+import { createTerminalManager, TerminalError } from '@orkestrel/terminal'
 import { describe, expect, it } from 'vitest'
 import { createRecorder, createScriptedProvider, waitForDelay } from '../../setup.js'
 
@@ -788,5 +794,247 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 		expect(isAgentToolError(missing) ? missing.code : undefined).toBe('TOOL')
 		const empty = await rejectionOf(describeTool.execute({ name: '' }))
 		expect(isAgentToolError(empty) ? empty.code : undefined).toBe('TOOL')
+	})
+})
+
+// ── createPromptTool / createAnswerTool — the terminal ask/answer seam ───────
+
+/** A controllable fake `TimerHandler` — records armed `(callback, ms)` pairs and lets a test fire one on demand. */
+function createFakeTimer(): {
+	readonly timer: TimerHandler
+	fire: (index: number) => void
+	readonly armed: number
+} {
+	const armed: Array<{ callback: () => void; cancelled: boolean }> = []
+	const timer: TimerHandler = (callback, _ms) => {
+		const entry = { callback, cancelled: false }
+		armed.push(entry)
+		const cancel: TimerCancel = () => {
+			entry.cancelled = true
+		}
+		return cancel
+	}
+	return {
+		timer,
+		fire(index: number): void {
+			const entry = armed[index]
+			if (entry !== undefined && !entry.cancelled) entry.callback()
+		},
+		get armed() {
+			return armed.length
+		},
+	}
+}
+
+describe('createPromptTool / createAnswerTool — the terminal ask/answer seam', () => {
+	it('ask BLOCKS then resolves when the peer answers via the answer tool', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
+		expect(askTool.name).toBe(PROMPT_TOOL_NAME)
+		expect(answerTool.name).toBe(ANSWER_TOOL_NAME)
+
+		const pending = askTool.execute({ to: 'reviewer', form: 'confirm', message: 'Approve?' })
+
+		// Give the ask a tick to park, then list + answer through the answer tool.
+		await waitForDelay(0)
+		const listed = await answerTool.execute({ operation: 'pending' })
+		expect(Array.isArray(listed) ? listed.length : 0).toBe(1)
+		const first = Array.isArray(listed) ? listed[0] : undefined
+		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
+		expect(typeof id).toBe('string')
+
+		const ack = await answerTool.execute({ operation: 'answer', id, value: 'true' })
+		expect(ack).toEqual({ answered: id })
+		expect(await pending).toBe(true)
+	})
+
+	it('DEADLOCK: a prompt cycle maps to a typed DEADLOCK AgentToolError', async () => {
+		const manager = createTerminalManager()
+		manager.add('a')
+		manager.add('b')
+		const askFromA = createPromptTool({ manager, from: 'a' })
+		const askFromB = createPromptTool({ manager, from: 'b' })
+
+		const aAsksB = Promise.resolve(askFromA.execute({ to: 'b', form: 'confirm', message: 'ok?' }))
+		aAsksB.catch(() => {})
+		await waitForDelay(0)
+
+		const error = await rejectionOf(askFromB.execute({ to: 'a', form: 'confirm', message: 'ok?' }))
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('DEADLOCK')
+	})
+
+	it('unknown target maps to a typed TOOL AgentToolError listing known terminals', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const error = await rejectionOf(
+			askTool.execute({ to: 'ghost', form: 'input', message: 'name?' }),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		const known = isAgentToolError(error) ? error.context?.known : undefined
+		expect(known).toEqual(['agent'])
+	})
+
+	it('EXPIRE: an injected-timer expiry maps to a typed EXPIRE AgentToolError', async () => {
+		const manager = createTerminalManager()
+		const fake = createFakeTimer()
+		manager.add('agent')
+		manager.add('reviewer', { timeout: 10, timer: fake.timer })
+		const askTool = createPromptTool({ manager, from: 'agent' })
+
+		const pending = rejectionOf(
+			askTool.execute({ to: 'reviewer', form: 'input', message: 'name?' }),
+		)
+		await waitForDelay(0)
+		fake.fire(0)
+		const error = await pending
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('EXPIRE')
+	})
+
+	it("answer tool 'pending' lists addressed prompts with from attribution", async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
+
+		const pending = Promise.resolve(
+			askTool.execute({ to: 'reviewer', form: 'confirm', message: 'Approve?' }),
+		)
+		pending.catch(() => {})
+		await waitForDelay(0)
+
+		const listed = await answerTool.execute({ operation: 'pending' })
+		expect(Array.isArray(listed)).toBe(true)
+		const first = Array.isArray(listed) ? listed[0] : undefined
+		expect(first).toMatchObject({ from: 'agent', form: 'confirm', message: 'Approve?' })
+
+		// Answer it so the outstanding ask settles and doesn't leak between tests.
+		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
+		await answerTool.execute({ operation: 'answer', id, value: true })
+	})
+
+	it("answer tool 'answer' with a confirm prompt accepts a string 'true' (coercion) and resolves", async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
+
+		const pending = askTool.execute({ to: 'reviewer', form: 'confirm', message: 'Approve?' })
+		await waitForDelay(0)
+		const listed = await answerTool.execute({ operation: 'pending' })
+		const first = Array.isArray(listed) ? listed[0] : undefined
+		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
+
+		const ack = await answerTool.execute({ operation: 'answer', id, value: 'true' })
+		expect(ack).toEqual({ answered: id })
+		expect(await pending).toBe(true)
+	})
+
+	it('unknown id maps to a typed ANSWER AgentToolError', async () => {
+		const manager = createTerminalManager()
+		manager.add('reviewer')
+		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
+		const error = await rejectionOf(
+			answerTool.execute({ operation: 'answer', id: 'ghost-id', value: true }),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('ANSWER')
+		expect(isAgentToolError(error) ? error.context?.reason : undefined).toBe('unknown')
+	})
+
+	it('from/to cannot be overridden by args — construction-fixed identity', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('spoof')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
+
+		// Passing `from`/`to` in args is simply ignored — the shapes don't even accept them, and the
+		// handler never reads them: an ask still parks under the FIXED `from`, never `spoof`.
+		const pending = Promise.resolve(
+			askTool.execute({
+				to: 'reviewer',
+				form: 'confirm',
+				message: 'ok?',
+			}),
+		)
+		pending.catch(() => {})
+		await waitForDelay(0)
+
+		const listed = await answerTool.execute({ operation: 'pending' })
+		const first = Array.isArray(listed) ? listed[0] : undefined
+		expect(first).toMatchObject({ from: 'agent' })
+		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
+		await answerTool.execute({ operation: 'answer', id, value: true })
+	})
+
+	it('empty choices (select) THROWS a typed TOOL AgentToolError naming the choices requirement, without parking', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const error = await rejectionOf(
+			askTool.execute({ to: 'reviewer', form: 'select', message: 'pick one', choices: [] }),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(error instanceof Error ? error.message : '').toContain('choice')
+		expect(manager.pending('reviewer')).toEqual([])
+	})
+
+	it('empty choices (checkbox, choices omitted) THROWS a typed TOOL AgentToolError, without parking', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const error = await rejectionOf(
+			askTool.execute({ to: 'reviewer', form: 'checkbox', message: 'pick some' }),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(error instanceof Error ? error.message : '').toContain('choice')
+		expect(manager.pending('reviewer')).toEqual([])
+	})
+
+	it('a generic non-TARGET/DEADLOCK/EXPIRE TerminalError surfaces as TOOL with the generic asking-failed message', async () => {
+		const emitter: TerminalManagerInterface['emitter'] = {
+			destroyed: false,
+			on: () => {},
+			once: () => {},
+			off: () => {},
+			emit: () => {},
+			count: () => 0,
+			clear: () => {},
+			destroy: () => {},
+		}
+		function ask(..._args: readonly unknown[]): Promise<never> {
+			return Promise.reject(new TerminalError('DRIVER', 'driver failed'))
+		}
+		const stub: TerminalManagerInterface = {
+			emitter,
+			count: 0,
+			terminal: () => undefined,
+			terminals: () => ['b'],
+			add: () => {
+				throw new Error('not implemented')
+			},
+			ask,
+			pending: () => [],
+			answer: () => ({ success: false, error: 'unknown' }),
+			open: async () => undefined,
+			save: async () => false,
+			remove: () => false,
+			clear: () => {},
+			destroy: () => {},
+		}
+		const askTool = createPromptTool({ manager: stub, from: 'a' })
+		const error = await rejectionOf(askTool.execute({ to: 'b', form: 'input', message: 'name?' }))
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		const message = error instanceof Error ? error.message : ''
+		expect(message).toContain('failed')
+		expect(message).not.toContain('unknown terminal')
 	})
 })
