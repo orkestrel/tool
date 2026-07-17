@@ -165,6 +165,9 @@ export interface WorkflowToolOptions {
  *   operation targets). Takes priority over `store` when both are supplied.
  * - `store` — construct a manager over this durable {@link WorkspaceStoreInterface} (via
  *   `@orkestrel/agent`'s `createWorkspaceManager`) — used only when `manager` is omitted.
+ *   The store only backs the manager's own `open` / `save` operations: the tool's edits are
+ *   NOT auto-persisted — durability requires an explicit caller `save` on the manager
+ *   (unlike the workflow tool's `store`, which persists each executed snapshot on settle).
  * - `name` / `description` — advertised tool overrides; default to
  *   {@link import('./constants.js').WORKSPACE_TOOL_NAME} / {@link import('./constants.js').WORKSPACE_TOOL_DESCRIPTION}.
  */

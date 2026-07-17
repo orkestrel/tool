@@ -105,8 +105,9 @@ export function createToolFunction(tools: ToolManagerInterface, name: string): W
 			arguments: controller.input,
 		})
 		// A `tool` result NEVER throws — the manager isolates a handler throw into `result.error`.
-		// Surface that as a task failure (so a failing tool `fail`s the leaf, honouring `bail`),
-		// preserving the original message as `cause` so a catcher can inspect it directly.
+		// Surface that as a task failure (so a failing tool `fail`s the leaf, honouring `bail`).
+		// The manager already flattened the original throw to a string, so the message IS the
+		// richest surviving detail — `cause` carries that same string, nothing deeper exists.
 		if (result.error !== undefined) throw new Error(result.error, { cause: result.error })
 		return result.value
 	}
@@ -514,8 +515,8 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
  * {@link import('./shapers.js').agentToolShape}, assembles an `AgentJobInput` (`task` seeds the
  * sub-agent's conversation as a single `user` message; `provider` / `tools` / `system` fall
  * back to the tool's own {@link import('./types.js').AgentToolOptions} defaults), rehydrates the sub-agent via
- * `registry.build`, runs it with `agent.generate()`, and returns its settled `AgentResult`
- * value. A missing / unresolvable `provider`, or a malformed call, THROWS a typed `TOOL`
+ * `registry.build`, runs it with `agent.generate()`, and returns the settled
+ * `AgentResult.content` string (the sub-agent's final text). A missing / unresolvable `provider`, or a malformed call, THROWS a typed `TOOL`
  * {@link import('./errors.js').AgentToolError}; a delegation that would exceed
  * {@link import('./constants.js').AGENT_TOOL_DEPTH}, or re-enter an already-delegated agent (a
  * cycle), THROWS a typed `DEPTH` {@link import('./errors.js').AgentToolError} — both isolated
