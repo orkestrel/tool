@@ -1,11 +1,7 @@
 import type { AgentToolArguments } from '@src/core'
 import type { ToolResult } from '@orkestrel/agent'
 import type { WorkflowDraft } from '@src/core'
-import type {
-	TaskContext,
-	TaskControllerInterface,
-	WorkflowDefinition,
-} from '@orkestrel/workflow'
+import type { TaskContext, TaskControllerInterface, WorkflowDefinition } from '@orkestrel/workflow'
 import {
 	buildToolResult,
 	createAgent,
