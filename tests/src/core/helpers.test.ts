@@ -5,6 +5,7 @@ import type {
 	WorkflowDefinition,
 	WorkflowResult,
 } from '@orkestrel/workflow'
+import type { PromptType } from '@orkestrel/terminal'
 import {
 	agentTag,
 	coerceAnswer,
@@ -233,6 +234,106 @@ describe('coerceAnswer — normalize an LLM-supplied answer to its prompt form',
 
 	it('is deterministic — same form/value always yields the same result', () => {
 		expect(coerceAnswer('checkbox', 'x,y')).toEqual(coerceAnswer('checkbox', 'x,y'))
+	})
+})
+
+describe('pressure: coerceAnswer — hostile-value fuzz (totality, exact branch pinning)', () => {
+	it('confirm: boolean passthrough — only literal true/false pass through unchanged', () => {
+		expect(coerceAnswer('confirm', true)).toBe(true)
+		expect(coerceAnswer('confirm', false)).toBe(false)
+	})
+
+	it('confirm: "TRUE" / " true " / "True" all case/whitespace-insensitively coerce true', () => {
+		expect(coerceAnswer('confirm', 'TRUE')).toBe(true)
+		expect(coerceAnswer('confirm', ' true ')).toBe(true)
+		expect(coerceAnswer('confirm', 'True')).toBe(true)
+	})
+
+	it('confirm: 0 is NOT the string "false" — it falls through to Boolean(value), which is false', () => {
+		expect(coerceAnswer('confirm', 0)).toBe(false)
+	})
+
+	it('confirm: a non-empty object/array is truthy-coerced via Boolean(value) (never "" special-cased)', () => {
+		expect(coerceAnswer('confirm', {})).toBe(true)
+		expect(coerceAnswer('confirm', [])).toBe(true)
+	})
+
+	it('checkbox: a comma-separated string with surrounding spaces trims every entry', () => {
+		expect(coerceAnswer('checkbox', 'a, b , c')).toEqual(['a', 'b', 'c'])
+	})
+
+	it('checkbox: a single non-comma string wraps into a one-item array', () => {
+		expect(coerceAnswer('checkbox', 'a')).toEqual(['a'])
+	})
+
+	it('checkbox: an array of strings passes through, stringifying each entry', () => {
+		expect(coerceAnswer('checkbox', ['a', 'b'])).toEqual(['a', 'b'])
+	})
+
+	it('checkbox: a NESTED array entry stringifies to its Array.prototype.toString form ("a")', () => {
+		expect(coerceAnswer('checkbox', [['a']])).toEqual(['a'])
+	})
+
+	it('checkbox: a bare number is NOT an array/string — falls to the [String(value)] fallback', () => {
+		expect(coerceAnswer('checkbox', 5)).toEqual(['5'])
+	})
+
+	it('checkbox: a bare object is NOT an array/string — falls to the [String(value)] fallback ("[object Object]")', () => {
+		expect(coerceAnswer('checkbox', {})).toEqual(['[object Object]'])
+	})
+
+	it('text forms (input/password/select/editor): a number scalar stringifies via String(value)', () => {
+		expect(coerceAnswer('input', 42)).toBe('42')
+		expect(coerceAnswer('password', 42)).toBe('42')
+		expect(coerceAnswer('select', 42)).toBe('42')
+		expect(coerceAnswer('editor', 42)).toBe('42')
+	})
+
+	it('text forms: a boolean scalar stringifies via String(value)', () => {
+		expect(coerceAnswer('input', true)).toBe('true')
+	})
+
+	it('text forms: an object/array falls back to "" rather than serializing garbage', () => {
+		expect(coerceAnswer('input', {})).toBe('')
+		expect(coerceAnswer('input', [])).toBe('')
+	})
+
+	it('text forms: an empty string passes through verbatim (not stringified/blanked)', () => {
+		expect(coerceAnswer('input', '')).toBe('')
+	})
+
+	it('is total — never throws for any hostile value across every form', () => {
+		const hostileValues: readonly unknown[] = [
+			'TRUE',
+			' true ',
+			'True',
+			true,
+			0,
+			{},
+			[],
+			'a, b , c',
+			'a',
+			['a', 'b'],
+			[['a']],
+			42,
+			'',
+			null,
+			undefined,
+			NaN,
+		]
+		const forms: readonly PromptType[] = [
+			'confirm',
+			'checkbox',
+			'input',
+			'password',
+			'select',
+			'editor',
+		]
+		for (const form of forms) {
+			for (const value of hostileValues) {
+				expect(() => coerceAnswer(form, value)).not.toThrow()
+			}
+		}
 	})
 })
 

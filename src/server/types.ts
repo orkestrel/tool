@@ -42,10 +42,15 @@ export interface TerminalRoute {
  *   {@link import('./constants.js').TERMINAL_KEEPALIVE_MS}.
  * - `timer` — the injected {@link TimerHandler} driving the keepalive interval (default the host
  *   `setTimeout`/`clearTimeout`), so a test drives the keepalive deterministically.
+ * - `limit` — the maximum POST answer body size in bytes, streamed and enforced BEFORE JSON
+ *   parsing (ignoring any `Content-Length` header, so a lying header can never bypass the cap);
+ *   a body exceeding it is rejected `413` and `manager.answer` is never called. Defaults to
+ *   `@orkestrel/server`'s own `DEFAULT_BODY_LIMIT` (1 MiB).
  */
 export interface TerminalRoutesOptions {
 	readonly path?: string
 	readonly token?: string
 	readonly keepalive?: number
 	readonly timer?: TimerHandler
+	readonly limit?: number
 }

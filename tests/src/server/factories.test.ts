@@ -222,3 +222,457 @@ describe('createTerminalRoutes', () => {
 		expect(response.status).toBe(401)
 	})
 })
+
+// ── pressure: mount churn — repeated GET connect→abort cycles ────────────────
+
+/** A controllable fake `TimerHandler` that also tracks arm/cancel balance across many cycles. */
+function createChurnTimer(): {
+	readonly timer: TimerHandler
+	fire: (index: number) => void
+	readonly armedCount: number
+	readonly cancelledCount: number
+} {
+	const armed: Array<{ callback: () => void; cancelled: boolean }> = []
+	const timer: TimerHandler = (callback, _ms) => {
+		const entry = { callback, cancelled: false }
+		armed.push(entry)
+		const cancel: TimerCancel = () => {
+			entry.cancelled = true
+		}
+		return cancel
+	}
+	return {
+		timer,
+		fire(index: number): void {
+			const entry = armed[index]
+			if (entry !== undefined && !entry.cancelled) entry.callback()
+		},
+		get armedCount() {
+			return armed.length
+		},
+		get cancelledCount() {
+			return armed.filter((entry) => entry.cancelled).length
+		},
+	}
+}
+
+describe('pressure: mount churn — 50 sequential GET connect→abort cycles, no leaked timers/listeners', () => {
+	it('every armed keepalive timer is cancelled on abort — zero live timers after churn', async () => {
+		const churn = createChurnTimer()
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
+		const get = findRoute(routes, 'GET')
+
+		for (let i = 0; i < 50; i++) {
+			const controller = new AbortController()
+			const response = await get.handler(
+				new Request('http://x/terminals/assistant', { signal: controller.signal }),
+				{ params: { name: 'assistant' } },
+			)
+			expect(response.status).toBe(200)
+			await readAvailable(response)
+			controller.abort()
+			await readAvailable(response)
+		}
+
+		// One keepalive timer armed per connect (50 total), and every one cancelled on its own
+		// abort — the churn leaves zero LIVE (uncancelled) timers behind.
+		expect(churn.armedCount).toBe(50)
+		expect(churn.cancelledCount).toBe(churn.armedCount)
+	})
+
+	it('after 50 churn cycles, manager listener counts are back to baseline (no leaked pending/expire subscriptions)', async () => {
+		const churn = createChurnTimer()
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
+		const get = findRoute(routes, 'GET')
+
+		const baselinePending = manager.emitter.count('pending')
+		const baselineExpire = manager.emitter.count('expire')
+
+		for (let i = 0; i < 50; i++) {
+			const controller = new AbortController()
+			const response = await get.handler(
+				new Request('http://x/terminals/assistant', { signal: controller.signal }),
+				{ params: { name: 'assistant' } },
+			)
+			await readAvailable(response)
+			controller.abort()
+			await readAvailable(response)
+		}
+
+		expect(manager.emitter.count('pending')).toBe(baselinePending)
+		expect(manager.emitter.count('expire')).toBe(baselineExpire)
+	})
+
+	it('a fresh stream after churn receives EXACTLY ONE pending frame for one parked prompt — no ghost duplicate writes from prior cycles', async () => {
+		const churn = createChurnTimer()
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
+		const get = findRoute(routes, 'GET')
+
+		// Churn 50 connect→abort cycles on the SAME endpoint before opening the fresh stream.
+		for (let i = 0; i < 50; i++) {
+			const controller = new AbortController()
+			const response = await get.handler(
+				new Request('http://x/terminals/assistant', { signal: controller.signal }),
+				{ params: { name: 'assistant' } },
+			)
+			await readAvailable(response)
+			controller.abort()
+			await readAvailable(response)
+		}
+
+		// A fresh, LIVE stream (kept open — not aborted).
+		const freshController = new AbortController()
+		const fresh = await get.handler(
+			new Request('http://x/terminals/assistant', { signal: freshController.signal }),
+			{ params: { name: 'assistant' } },
+		)
+		expect(fresh.status).toBe(200)
+
+		// Park exactly one prompt AFTER the fresh stream opened, so it arrives as a LIVE `pending`
+		// event — if any prior cycle's `pendingHandler` had leaked (not truly `off`'d), this single
+		// `ask` would fan out into MULTIPLE `event: pending` frames on the fresh stream.
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'churn-check' })
+		asked.catch(() => {})
+
+		const text = await readAvailable(fresh)
+		const pendingFrameCount = (text.match(/event: pending/g) ?? []).length
+		expect(pendingFrameCount).toBe(1)
+
+		freshController.abort()
+		await readAvailable(fresh)
+	})
+})
+
+// ── pressure: POST fuzz — malformed bodies, unknown endpoint, bad token, expired id ──
+
+describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wrong token, expired id', () => {
+	it('malformed JSON body 400s, manager state untouched', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager)
+		const post = findRoute(routes, 'POST')
+		const before = manager.pending('assistant')
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', { method: 'POST', body: '{not valid json' }),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(400)
+		expect(manager.pending('assistant')).toEqual(before)
+	})
+
+	it('valid JSON but an empty object fails isAnswerPayload — 422, manager state untouched', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager)
+		const post = findRoute(routes, 'POST')
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		asked.catch(() => {})
+		const before = manager.pending('assistant')
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', { method: 'POST', body: JSON.stringify({}) }),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(422)
+		expect(manager.pending('assistant')).toEqual(before)
+	})
+
+	it('{ id: 1 } (id not a string) fails isAnswerPayload — 422, manager state untouched', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager)
+		const post = findRoute(routes, 'POST')
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		asked.catch(() => {})
+		const before = manager.pending('assistant')
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', {
+				method: 'POST',
+				body: JSON.stringify({ id: 1 }),
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(422)
+		expect(manager.pending('assistant')).toEqual(before)
+	})
+
+	it("{ id: 'x' } (missing value key) fails isAnswerPayload — 422, manager state untouched", async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager)
+		const post = findRoute(routes, 'POST')
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		asked.catch(() => {})
+		const before = manager.pending('assistant')
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', {
+				method: 'POST',
+				body: JSON.stringify({ id: 'x' }),
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(422)
+		expect(manager.pending('assistant')).toEqual(before)
+	})
+
+	it('unknown endpoint 404s regardless of body validity', async () => {
+		const manager = createTerminalManager()
+		const routes = createTerminalRoutes(manager)
+		const post = findRoute(routes, 'POST')
+		const response = await post.handler(
+			new Request('http://x/terminals/ghost', {
+				method: 'POST',
+				body: JSON.stringify({ id: 'x', value: 'ok' }),
+			}),
+			{ params: { name: 'ghost' } },
+		)
+		expect(response.status).toBe(404)
+	})
+
+	it('wrong token 401s before the body is ever parsed (manager state untouched)', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, { token: 'secret' })
+		const post = findRoute(routes, 'POST')
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		asked.catch(() => {})
+		const before = manager.pending('assistant')
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', {
+				method: 'POST',
+				headers: { [HEADER_TOKEN]: 'wrong-token' },
+				body: JSON.stringify({ id: 'x', value: 'ok' }),
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(401)
+		expect(manager.pending('assistant')).toEqual(before)
+	})
+
+	it('correct token + well-formed payload for an EXPIRED id: manager.answer reports unknown — 422, manager state untouched', async () => {
+		const churn = createChurnTimer()
+		const manager = createTerminalManager()
+		manager.add('assistant', { timeout: 5, timer: churn.timer })
+		const routes = createTerminalRoutes(manager, { token: 'secret', timer: churn.timer })
+		const post = findRoute(routes, 'POST')
+
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		asked.catch(() => {})
+		const pending = manager.pending('assistant')
+		const id = pending[0]?.id
+		if (id === undefined) throw new Error('expected a parked prompt')
+
+		// Expire it via the injected timer BEFORE posting the answer.
+		churn.fire(0)
+		await asked.catch(() => {})
+		expect(manager.pending('assistant')).toEqual([])
+
+		const before = manager.pending('assistant')
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', {
+				method: 'POST',
+				headers: { [HEADER_TOKEN]: 'secret' },
+				body: JSON.stringify({ id, value: 'Ada' }),
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(422)
+		expect(manager.pending('assistant')).toEqual(before)
+	})
+})
+
+// ── pressure: bounded POST body — over-limit and Content-Length lies ─────────
+
+/** A `ReadableStream<Uint8Array>` that emits `totalBytes` of filler in `chunkSize` chunks. */
+function makeStreamBody(totalBytes: number, chunkSize = 64): ReadableStream<Uint8Array> {
+	let sent = 0
+	return new ReadableStream<Uint8Array>({
+		pull(controller) {
+			if (sent >= totalBytes) {
+				controller.close()
+				return
+			}
+			const size = Math.min(chunkSize, totalBytes - sent)
+			controller.enqueue(new Uint8Array(size).fill(97))
+			sent += size
+		},
+	})
+}
+
+describe('pressure: bounded POST body — over-limit rejected 413, manager untouched', () => {
+	it('a body over the injected `limit` 413s before `manager.answer` runs', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, { limit: 16 })
+		const post = findRoute(routes, 'POST')
+
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		asked.catch(() => {})
+		const before = manager.pending('assistant')
+
+		// Not a literal object type-narrowed to `RequestInit` — `duplex` is required by the
+		// runtime for a streamed body but is not (yet) part of the DOM `RequestInit` typings; a
+		// non-literal variable skips excess-property checking without an `as` cast.
+		const init = { method: 'POST', body: makeStreamBody(1024), duplex: 'half' }
+		const response = await post.handler(new Request('http://x/terminals/assistant', init), {
+			params: { name: 'assistant' },
+		})
+		expect(response.status).toBe(413)
+		expect(manager.pending('assistant')).toEqual(before)
+	})
+
+	it('a small `Content-Length` header lying about a big streamed body is still capped (limit ignores the header)', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, { limit: 16 })
+		const post = findRoute(routes, 'POST')
+
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		asked.catch(() => {})
+		const before = manager.pending('assistant')
+
+		const init = {
+			method: 'POST',
+			headers: { 'content-length': '5' },
+			body: makeStreamBody(1024),
+			duplex: 'half',
+		}
+		const response = await post.handler(new Request('http://x/terminals/assistant', init), {
+			params: { name: 'assistant' },
+		})
+		expect(response.status).toBe(413)
+		expect(manager.pending('assistant')).toEqual(before)
+	})
+
+	it('a body AT the limit is still parsed normally (boundary is exclusive-over, not inclusive)', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager)
+		const post = findRoute(routes, 'POST')
+
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const pending = manager.pending('assistant')
+		const id = pending[0]?.id
+		if (id === undefined) throw new Error('expected a parked prompt')
+
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', {
+				method: 'POST',
+				body: JSON.stringify({ id, value: 'Ada' }),
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(204)
+		await expect(asked).resolves.toBe('Ada')
+	})
+})
+
+// ── self-heal: a stream closed WITHOUT the request signal aborting ───────────
+
+describe('self-heal: consumer-side stream close (no signal abort) tears down on next event / keepalive tick', () => {
+	it('a live `pending` event on a closed-but-not-aborted stream detaches listeners and cancels the keepalive', async () => {
+		const churn = createChurnTimer()
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
+		const get = findRoute(routes, 'GET')
+
+		const baselinePending = manager.emitter.count('pending')
+		const baselineExpire = manager.emitter.count('expire')
+
+		const controller = new AbortController()
+		const response = await get.handler(
+			new Request('http://x/terminals/assistant', { signal: controller.signal }),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(200)
+		expect(manager.emitter.count('pending')).toBe(baselinePending + 1)
+		expect(manager.emitter.count('expire')).toBe(baselineExpire + 1)
+		expect(churn.armedCount).toBe(1)
+		expect(churn.cancelledCount).toBe(0)
+
+		// Close the stream from the CONSUMER side — cancel the reader — WITHOUT ever aborting
+		// the request signal, simulating a disconnect the abort listener misses entirely.
+		const reader = response.body?.getReader()
+		if (reader === undefined) throw new Error('expected a streaming body')
+		await reader.cancel()
+
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'self-heal' })
+		asked.catch(() => {})
+
+		expect(manager.emitter.count('pending')).toBe(baselinePending)
+		expect(manager.emitter.count('expire')).toBe(baselineExpire)
+		expect(churn.cancelledCount).toBe(churn.armedCount)
+		expect(controller.signal.aborted).toBe(false)
+	})
+
+	it('a keepalive tick on a closed-but-not-aborted stream self-heals instead of re-arming', async () => {
+		const churn = createChurnTimer()
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
+		const get = findRoute(routes, 'GET')
+
+		const baselinePending = manager.emitter.count('pending')
+
+		const controller = new AbortController()
+		const response = await get.handler(
+			new Request('http://x/terminals/assistant', { signal: controller.signal }),
+			{ params: { name: 'assistant' } },
+		)
+
+		const reader = response.body?.getReader()
+		if (reader === undefined) throw new Error('expected a streaming body')
+		await reader.cancel()
+
+		churn.fire(0)
+
+		expect(manager.emitter.count('pending')).toBe(baselinePending)
+		expect(churn.armedCount).toBe(1)
+		expect(controller.signal.aborted).toBe(false)
+	})
+
+	it('double-teardown through both paths — self-heal first, then a later signal abort — stays clean and does not throw', async () => {
+		const churn = createChurnTimer()
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
+		const get = findRoute(routes, 'GET')
+
+		const baselinePending = manager.emitter.count('pending')
+		const baselineExpire = manager.emitter.count('expire')
+
+		const controller = new AbortController()
+		const response = await get.handler(
+			new Request('http://x/terminals/assistant', { signal: controller.signal }),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(200)
+		expect(manager.emitter.count('pending')).toBe(baselinePending + 1)
+		expect(manager.emitter.count('expire')).toBe(baselineExpire + 1)
+
+		// Consumer-side close WITHOUT aborting the request signal — triggers self-heal teardown
+		// on the next event, which now also detaches the request's `abort` listener.
+		const reader = response.body?.getReader()
+		if (reader === undefined) throw new Error('expected a streaming body')
+		await reader.cancel()
+
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'self-heal-then-abort' })
+		asked.catch(() => {})
+
+		expect(manager.emitter.count('pending')).toBe(baselinePending)
+		expect(manager.emitter.count('expire')).toBe(baselineExpire)
+		expect(churn.cancelledCount).toBe(churn.armedCount)
+
+		// The request signal aborts AFTER self-heal already tore everything down. Since teardown
+		// removed its own `abort` listener during the self-heal pass, this abort should be a
+		// no-op — no throw, no double-detach errors, no re-invocation of teardown's body.
+		expect(() => controller.abort()).not.toThrow()
+		expect(controller.signal.aborted).toBe(true)
+	})
+})

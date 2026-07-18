@@ -1038,3 +1038,256 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		expect(message).not.toContain('unknown terminal')
 	})
 })
+
+// ── pressure: createPromptTool arg fuzz ──────────────────────────────────────
+
+describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as typed TOOL errors, nothing parks', () => {
+	it('missing `to` throws typed TOOL, nothing parks', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const error = await rejectionOf(askTool.execute({ form: 'input', message: 'hi' }))
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(manager.pending('reviewer')).toEqual([])
+	})
+
+	it('missing `form` throws typed TOOL, nothing parks', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const error = await rejectionOf(askTool.execute({ to: 'reviewer', message: 'hi' }))
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(manager.pending('reviewer')).toEqual([])
+	})
+
+	it('missing `message` throws typed TOOL, nothing parks', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const error = await rejectionOf(askTool.execute({ to: 'reviewer', form: 'input' }))
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(manager.pending('reviewer')).toEqual([])
+	})
+
+	it("unknown form 'wizard' throws typed TOOL, nothing parks", async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const error = await rejectionOf(
+			askTool.execute({ to: 'reviewer', form: 'wizard', message: 'hi' }),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(manager.pending('reviewer')).toEqual([])
+	})
+
+	// FINDING: a numeric `message` is NOT schema-invalid — `@orkestrel/contract`'s string parser
+	// (`parseString`) coerces a finite number to its string form before validation, so
+	// `message: 42` parses successfully as `'42'` and the ask genuinely parks (it does not throw).
+	// Pinning the ACTUAL documented contract behavior here instead of the originally-assumed
+	// rejection (which would hang the ask forever, since nothing ever answers it).
+	it('a numeric `message` is COERCED to its string form by the contract layer (not rejected) — the ask parks normally', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
+		const pending = Promise.resolve(askTool.execute({ to: 'reviewer', form: 'input', message: 42 }))
+		pending.catch(() => {})
+		await waitForDelay(0)
+		expect(manager.pending('reviewer')).toHaveLength(1)
+		const listed = await answerTool.execute({ operation: 'pending' })
+		const first = Array.isArray(listed) ? listed[0] : undefined
+		expect(first).toMatchObject({ message: '42' })
+		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
+		await answerTool.execute({ operation: 'answer', id, value: 'ok' })
+		expect(await pending).toBe('ok')
+	})
+
+	it('an OBJECT `message` (not string/finite-number coercible) throws typed TOOL, nothing parks', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const error = await rejectionOf(askTool.execute({ to: 'reviewer', form: 'input', message: {} }))
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(manager.pending('reviewer')).toEqual([])
+	})
+
+	it('negative `timeout` throws typed TOOL, nothing parks', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const error = await rejectionOf(
+			askTool.execute({ to: 'reviewer', form: 'input', message: 'hi', timeout: -5 }),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(manager.pending('reviewer')).toEqual([])
+	})
+
+	it('`choices` as a bare string (not an array of {name, value}) throws typed TOOL, nothing parks', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const error = await rejectionOf(
+			askTool.execute({ to: 'reviewer', form: 'select', message: 'pick one', choices: 'a,b' }),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(manager.pending('reviewer')).toEqual([])
+	})
+})
+
+// ── pressure: multi-agent round — ten terminals, thirty interleaved asks ────
+
+describe('pressure: multi-agent round — ten terminals, thirty interleaved asks, deadlock, expire', () => {
+	const NAMES = Array.from({ length: 10 }, (_, i) => `t${i}`)
+
+	function buildTerminals(manager: TerminalManagerInterface): void {
+		for (const name of NAMES) manager.add(name)
+	}
+
+	it('30 interleaved asks across a lower→upper bipartite split (no cycle) all resolve with the coerced value', async () => {
+		const manager = createTerminalManager()
+		buildTerminals(manager)
+		const askTools = new Map(NAMES.map((name) => [name, createPromptTool({ manager, from: name })]))
+		const answerTools = new Map(
+			NAMES.map((name) => [name, createAnswerTool({ manager, to: name })]),
+		)
+
+		const lower = NAMES.slice(0, 5)
+		const upper = NAMES.slice(5, 10)
+		const forms: ReadonlyArray<'input' | 'confirm' | 'checkbox'> = ['input', 'confirm', 'checkbox']
+
+		// 30 asks, each strictly lower → upper (bipartite — never a reverse edge, so no cycle can
+		// ever close regardless of how many are held pending simultaneously).
+		type Ask = {
+			readonly from: string
+			readonly to: string
+			readonly form: 'input' | 'confirm' | 'checkbox'
+		}
+		const asks: Ask[] = []
+		for (let i = 0; i < 30; i++) {
+			const from = lower[i % 5]
+			const to = upper[(i + Math.floor(i / 5)) % 5]
+			const form = forms[i % 3]
+			if (from === undefined || to === undefined || form === undefined)
+				throw new Error('unreachable')
+			asks.push({ from, to, form })
+		}
+
+		const pendingAsks = asks.map(({ from, to, form }) => {
+			const askTool = askTools.get(from)
+			if (askTool === undefined) throw new Error('unreachable')
+			const message = `${form} question from ${from} to ${to}`
+			const args: Record<string, unknown> =
+				form === 'checkbox'
+					? {
+							to,
+							form,
+							message,
+							choices: [
+								{ name: 'x', value: 'x' },
+								{ name: 'y', value: 'y' },
+							],
+						}
+					: { to, form, message }
+			const promise = Promise.resolve(askTool.execute(args))
+			promise.catch(() => {})
+			return promise
+		})
+
+		await waitForDelay(0)
+
+		// Gather every parked prompt id (per upper terminal) up front, then answer them in a
+		// SHUFFLED-but-deterministic order (reverse of discovery order) — first-write-wins /
+		// ordering must not matter to correctness.
+		const allPending: Array<{ readonly to: string; readonly id: string; readonly form: string }> =
+			[]
+		for (const to of upper) {
+			const answerTool = answerTools.get(to)
+			if (answerTool === undefined) throw new Error('unreachable')
+			const listed = await answerTool.execute({ operation: 'pending' })
+			if (!Array.isArray(listed)) throw new Error('expected an array')
+			for (const entry of listed) {
+				if (
+					entry !== null &&
+					typeof entry === 'object' &&
+					'id' in entry &&
+					typeof entry.id === 'string'
+				) {
+					const form = 'form' in entry && typeof entry.form === 'string' ? entry.form : ''
+					allPending.push({ to, id: entry.id, form })
+				}
+			}
+		}
+		expect(allPending).toHaveLength(30)
+
+		const shuffled = [...allPending].reverse()
+		for (const entry of shuffled) {
+			const answerTool = answerTools.get(entry.to)
+			if (answerTool === undefined) throw new Error('unreachable')
+			const value = entry.form === 'confirm' ? true : entry.form === 'checkbox' ? 'x,y' : 'answered'
+			const ack = await answerTool.execute({ operation: 'answer', id: entry.id, value })
+			expect(ack).toEqual({ answered: entry.id })
+		}
+
+		const settled = await Promise.all(pendingAsks)
+		const expected = asks.map((ask) => {
+			if (ask.form === 'confirm') return true
+			if (ask.form === 'checkbox') return ['x', 'y']
+			return 'answered'
+		})
+		expect(settled).toEqual(expected)
+	})
+
+	it('a reciprocal ask between two agents surfaces DEADLOCK with the cycle path in context', async () => {
+		const manager = createTerminalManager()
+		buildTerminals(manager)
+		const askTools = new Map(NAMES.map((name) => [name, createPromptTool({ manager, from: name })]))
+
+		const askA = askTools.get('t0')
+		const askB = askTools.get('t1')
+		if (askA === undefined || askB === undefined) throw new Error('unreachable')
+
+		const first = Promise.resolve(askA.execute({ to: 't1', form: 'confirm', message: 'ok?' }))
+		first.catch(() => {})
+		await waitForDelay(0)
+
+		const error = await rejectionOf(askB.execute({ to: 't0', form: 'confirm', message: 'ok?' }))
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('DEADLOCK')
+		const context = isAgentToolError(error) ? error.context : undefined
+		const path = context !== undefined && 'path' in context ? context.path : undefined
+		expect(Array.isArray(path) ? path : []).toEqual(expect.arrayContaining(['t0', 't1']))
+	})
+
+	it('an EXPIRE (fake-timer-driven) fires while nine other agents remain pending — surfaces typed EXPIRE only for the expired ask', async () => {
+		const fake = createFakeTimer()
+		const manager = createTerminalManager()
+		manager.add('t0')
+		manager.add('t9', { timeout: 10, timer: fake.timer })
+		for (const name of NAMES.slice(1, 9)) manager.add(name)
+		const askFromT0 = createPromptTool({ manager, from: 't0' })
+		const askFromT1 = createPromptTool({ manager, from: 't1' })
+
+		// A second, ordinary ask (no timer) stays pending throughout — proves the expiry is scoped
+		// to the one prompt whose broker was configured with the fake timer, not global.
+		const other = Promise.resolve(
+			askFromT1.execute({ to: 't2', form: 'input', message: 'still waiting' }),
+		)
+		other.catch(() => {})
+
+		const expiring = rejectionOf(askFromT0.execute({ to: 't9', form: 'input', message: 'name?' }))
+		await waitForDelay(0)
+		fake.fire(0)
+		const error = await expiring
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('EXPIRE')
+
+		// The unrelated pending ask is untouched — still parked, not settled.
+		expect(manager.pending('t2')).toHaveLength(1)
+	})
+})

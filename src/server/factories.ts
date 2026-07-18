@@ -1,4 +1,4 @@
-import type { PendingPrompt, TerminalManagerInterface } from '@orkestrel/terminal'
+import type { PendingPrompt, TerminalManagerInterface, TimerCancel } from '@orkestrel/terminal'
 import type { TerminalRoute, TerminalRouteContext, TerminalRoutesOptions } from './types.js'
 import {
 	defaultTimer,
@@ -7,7 +7,7 @@ import {
 	serializeExpire,
 	serializePending,
 } from '@orkestrel/terminal'
-import { openStream } from '@orkestrel/server'
+import { DEFAULT_BODY_LIMIT, openStream } from '@orkestrel/server'
 import { TERMINAL_KEEPALIVE_MS, TERMINAL_ROUTES_PATH } from './constants.js'
 
 // Server-package factories — the SSE + POST mount over a `TerminalManagerInterface`
@@ -30,10 +30,11 @@ import { TERMINAL_KEEPALIVE_MS, TERMINAL_ROUTES_PATH } from './constants.js'
  *   the host `setTimeout`). On the request's `AbortSignal` firing (client disconnect OR server
  *   stop) the keepalive is cancelled, both listeners unsubscribed, and the stream ended — no
  *   `shutdown` frame is sent, so a reconnecting client is never told the endpoint is gone.
- * - **POST (answer).** Same token + `404` checks, then parses the JSON body (`400` on invalid
- *   JSON, `422` when it isn't an `{ id, value }` {@link import('@orkestrel/terminal').isAnswerPayload}
- *   shape), and routes it through `manager.answer` — `204` on success, `404` for `'terminal'`,
- *   `422` for `'unknown'` / `'rejected'`.
+ * - **POST (answer).** Same token + `404` checks, then reads the body capped at `options.limit`
+ *   bytes (`413` over, `manager.answer` never called — see {@link TerminalRoutesOptions.limit}),
+ *   parses the JSON body (`400` on invalid JSON, `422` when it isn't an `{ id, value }`
+ *   {@link import('@orkestrel/terminal').isAnswerPayload} shape), and routes it through
+ *   `manager.answer` — `204` on success, `404` for `'terminal'`, `422` for `'unknown'` / `'rejected'`.
  *
  * @remarks
  * The `token` option is checked once per request at connect — a token that expires mid-stream
@@ -63,6 +64,41 @@ export function createTerminalRoutes(
 	const token = options?.token
 	const keepalive = options?.keepalive ?? TERMINAL_KEEPALIVE_MS
 	const timer = options?.timer ?? defaultTimer
+	const limit = options?.limit ?? DEFAULT_BODY_LIMIT
+
+	// Bounded body read — `@orkestrel/server`'s own `readBody` decodes by `Content-Type`
+	// (`application/json` parses, anything else decodes as text), so a bare answer POST that
+	// omits `Content-Type` (as this route's own byte-compatible `PromptClient` counterpart does)
+	// would be decoded as TEXT rather than parsed JSON, changing the existing 400/422 status
+	// mapping. Reading the body ourselves via the `ReadableStream` reader — capped at `limit`,
+	// ignoring `Content-Length` entirely so a lying header can never bypass the cap — then
+	// `JSON.parse`ing the accumulated text preserves that mapping exactly while still bounding
+	// the read.
+	async function readBoundedText(
+		request: Request,
+	): Promise<{ readonly ok: true; readonly text: string } | { readonly ok: false }> {
+		const reader = request.body?.getReader()
+		if (reader === undefined) return { ok: true, text: '' }
+		const chunks: Uint8Array[] = []
+		let received = 0
+		while (true) {
+			const { done, value } = await reader.read()
+			if (done) break
+			received += value.byteLength
+			if (received > limit) {
+				await reader.cancel()
+				return { ok: false }
+			}
+			chunks.push(value)
+		}
+		const buffer = new Uint8Array(received)
+		let offset = 0
+		for (const chunk of chunks) {
+			buffer.set(chunk, offset)
+			offset += chunk.byteLength
+		}
+		return { ok: true, text: new TextDecoder().decode(buffer) }
+	}
 
 	function authorized(request: Request): boolean {
 		if (token === undefined) return true
@@ -83,13 +119,36 @@ export function createTerminalRoutes(
 				stream.write({ event: wire.event, data: wire.data, id: wire.id })
 			}
 
+			// Shared teardown — the ONE place that cancels the keepalive and detaches all
+			// listeners (both manager listeners and the request's `abort` listener), so the
+			// abort path and the self-heal path (a stream that closed without the request's
+			// `AbortSignal` firing, e.g. a consumer that only cancels its reader) can never
+			// drift apart. `cancelKeepalive`/`stream.end`/`removeEventListener` are safe
+			// no-ops if already run — teardown itself is idempotent.
+			let cancelKeepalive: TimerCancel = () => {}
+			const teardown = (): void => {
+				cancelKeepalive()
+				manager.emitter.off('pending', pendingHandler)
+				manager.emitter.off('expire', expireHandler)
+				request.signal.removeEventListener('abort', teardown)
+				stream.end()
+			}
+
 			const pendingHandler = (prompt: PendingPrompt): void => {
 				if (prompt.to !== name) return
+				if (stream.closed) {
+					teardown()
+					return
+				}
 				const wire = serializePending(prompt)
 				stream.write({ event: wire.event, data: wire.data, id: wire.id })
 			}
 			const expireHandler = (to: string, id: string): void => {
 				if (to !== name) return
+				if (stream.closed) {
+					teardown()
+					return
+				}
 				const wire = serializeExpire(id)
 				stream.write({ event: wire.event, data: wire.data, id: wire.id })
 			}
@@ -97,17 +156,16 @@ export function createTerminalRoutes(
 			manager.emitter.on('pending', pendingHandler)
 			manager.emitter.on('expire', expireHandler)
 
-			let cancelKeepalive = timer(function ping(): void {
+			cancelKeepalive = timer(function ping(): void {
+				if (stream.closed) {
+					teardown()
+					return
+				}
 				stream.comment('')
 				cancelKeepalive = timer(ping, keepalive)
 			}, keepalive)
 
-			request.signal.addEventListener('abort', () => {
-				cancelKeepalive()
-				manager.emitter.off('pending', pendingHandler)
-				manager.emitter.off('expire', expireHandler)
-				stream.end()
-			})
+			request.signal.addEventListener('abort', teardown)
 
 			return stream.response
 		},
@@ -121,9 +179,12 @@ export function createTerminalRoutes(
 			const name = context.params.name
 			if (manager.terminal(name) === undefined) return new Response(null, { status: 404 })
 
+			const bounded = await readBoundedText(request)
+			if (!bounded.ok) return new Response(null, { status: 413 })
+
 			let body: unknown
 			try {
-				body = await request.json()
+				body = JSON.parse(bounded.text)
 			} catch {
 				return new Response(null, { status: 400 })
 			}
