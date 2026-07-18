@@ -84,13 +84,10 @@ import {
 	expandInclude,
 	expandSteps,
 	expandTables,
-	keysOf,
 	relationManagerOf,
 	relationModelOf,
 	relationToolCode,
-	rowOf,
 	tableSchema,
-	tableSpecOf,
 	terminalToolCode,
 	workflowTag,
 	workflowToolSummary,
@@ -1108,8 +1105,8 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 								driver: name,
 							})
 						}
-						const tables = tableSpecOf(call.tables)
-						const keys = keysOf(call.keys)
+						const tables = call.tables
+						const keys = call.keys
 						const handle = createDatabase({
 							driver: factory(),
 							tables: expandTables(tables),
@@ -1173,7 +1170,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						const handle = await resolve(call.id)
 						const table = handle.table(call.table)
 						const many = Array.isArray(call.row)
-						const rows = (Array.isArray(call.row) ? call.row : [call.row]).map(rowOf)
+						const rows = Array.isArray(call.row) ? call.row : [call.row]
 						const keys = await table.add(rows, read)
 						return many ? { keys } : { key: keys[0] }
 					}
@@ -1181,14 +1178,14 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						const handle = await resolve(call.id)
 						const table = handle.table(call.table)
 						const many = Array.isArray(call.row)
-						const rows = (Array.isArray(call.row) ? call.row : [call.row]).map(rowOf)
+						const rows = Array.isArray(call.row) ? call.row : [call.row]
 						const keys = await table.set(rows, read)
 						return many ? { keys } : { key: keys[0] }
 					}
 					case 'update': {
 						const handle = await resolve(call.id)
 						const table = handle.table(call.table)
-						const changes = rowOf(call.changes)
+						const changes = call.changes
 						const many = Array.isArray(call.key)
 						const keys = Array.isArray(call.key) ? call.key : [call.key]
 						const updated = await table.update(keys, changes, read)
@@ -1208,7 +1205,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						const deployed = Object.entries(previous).map(([name, table]) =>
 							tableSchema(name, table),
 						)
-						const tables = tableSpecOf(call.tables)
+						const tables = call.tables
 						const keys: Record<string, string> = {}
 						for (const name of Object.keys(tables)) {
 							const existing = previous[name]

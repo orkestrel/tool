@@ -522,67 +522,6 @@ export function criteriaOf(
 }
 
 /**
- * Narrow the database tool's parsed `tables` field back to a strict {@link TableSpec}.
- *
- * @remarks
- * {@link import('./shapers.js').databaseToolShape}'s `tables` field compiles through an OPEN
- * `recordShape` — a contract `Infer` (AGENTS §14) only reads a shape's `properties`, never its
- * `additionalProperties`, so a record shape's parsed value carries a WIDENED index-signature type
- * rather than the literal {@link TableSpec} nesting. The runtime value already passed the shape's
- * validation; this is the TYPE-LEVEL bridge back to {@link TableSpec}, re-narrowing every column
- * with {@link isColumnSpec} (a column that somehow fails it — impossible post-validation — is
- * dropped defensively rather than silently miscoerced).
- *
- * @param value - The parsed `tables` value
- * @returns The equivalent {@link TableSpec}
- */
-export function tableSpecOf(value: Readonly<Record<string, unknown>>): TableSpec {
-	const tables: Record<string, Readonly<{ columns: Readonly<Record<string, ColumnSpec>> }>> = {}
-	for (const [table, definition] of Object.entries(value)) {
-		if (!isRecord(definition) || !isRecord(definition.columns)) continue
-		const columns: Record<string, ColumnSpec> = {}
-		for (const [column, spec] of Object.entries(definition.columns)) {
-			if (isColumnSpec(spec)) columns[column] = spec
-		}
-		tables[table] = { columns }
-	}
-	return tables
-}
-
-/**
- * Narrow the database tool's parsed `keys` field back to a `Readonly<Record<string, string>>` —
- * the `keys`-field twin of {@link tableSpecOf}, for the same open-`recordShape` Infer-widening
- * reason.
- *
- * @param value - The parsed `keys` value (or `undefined`)
- * @returns The equivalent `Readonly<Record<string, string>>`, or `undefined` when `value` is
- *   `undefined`
- */
-export function keysOf(
-	value: Readonly<Record<string, unknown>> | undefined,
-): Readonly<Record<string, string>> | undefined {
-	if (value === undefined) return undefined
-	const keys: Record<string, string> = {}
-	for (const [table, column] of Object.entries(value)) {
-		if (isString(column)) keys[table] = column
-	}
-	return keys
-}
-
-/**
- * Narrow the database tool's parsed `row` / `changes` field back to a plain mutable
- * `Record<string, unknown>` — the row-field twin of {@link tableSpecOf}, for the same open-
- * `recordShape` Infer-widening reason (a `@orkestrel/database` `TableInterface` write expects a
- * mutable `Row`, not the widened readonly-indexed parsed type).
- *
- * @param value - The parsed row / changes value
- * @returns An equivalent plain `Record<string, unknown>`
- */
-export function rowOf(value: Readonly<Record<string, unknown>>): Record<string, unknown> {
-	return { ...value }
-}
-
-/**
  * Clamp a `'records'` call's criteria to a row cap, and build the PROBE criteria the caller reads
  * with — the pure leaf {@link import('./factories.js').createDatabaseTool}'s `'records'` operation
  * uses to detect truncation without a separate `count` round trip.

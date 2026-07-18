@@ -25,11 +25,8 @@ import {
 	isColumnKind,
 	isColumnSpec,
 	isDatabaseDefinition,
-	keysOf,
 	relationToolCode,
-	rowOf,
 	tableSchema,
-	tableSpecOf,
 	terminalToolCode,
 	workflowTag,
 	workflowToolSummary,
@@ -598,64 +595,6 @@ describe('criteriaOf — normalize parsed wire criteria into a live Criteria', (
 
 	it('an empty criteria object yields an empty (no-key) result', () => {
 		expect(criteriaOf({})).toEqual({})
-	})
-})
-
-describe('tableSpecOf — re-narrow a parsed loose tables value back to a strict TableSpec', () => {
-	it('re-narrows valid table/column entries', () => {
-		const result = tableSpecOf({
-			widgets: { columns: { name: 'string', qty: { type: 'integer', optional: true } } },
-		})
-		expect(result).toEqual({
-			widgets: { columns: { name: 'string', qty: { type: 'integer', optional: true } } },
-		})
-	})
-
-	it('drops a malformed table entry (not a record, or missing/invalid columns)', () => {
-		expect(tableSpecOf({ widgets: 'nope' })).toEqual({})
-		expect(tableSpecOf({ widgets: { columns: 'nope' } })).toEqual({})
-	})
-
-	it('drops an individual column that fails isColumnSpec, keeping the rest of the table', () => {
-		const result = tableSpecOf({
-			widgets: { columns: { name: 'string', bad: 'text' } },
-		})
-		expect(result.widgets?.columns).toEqual({ name: 'string' })
-	})
-
-	it('an empty input yields an empty TableSpec', () => {
-		expect(tableSpecOf({})).toEqual({})
-	})
-})
-
-describe('keysOf — re-narrow a parsed loose keys value back to Record<string, string>', () => {
-	it('returns undefined when the input is undefined', () => {
-		expect(keysOf(undefined)).toBeUndefined()
-	})
-
-	it('re-narrows string-valued entries', () => {
-		expect(keysOf({ widgets: 'name', gadgets: 'id' })).toEqual({ widgets: 'name', gadgets: 'id' })
-	})
-
-	it('drops a non-string entry, keeping the rest', () => {
-		expect(keysOf({ widgets: 'name', bad: 42 })).toEqual({ widgets: 'name' })
-	})
-
-	it('an empty input yields an empty record', () => {
-		expect(keysOf({})).toEqual({})
-	})
-})
-
-describe('rowOf — coerce a parsed row/changes value to a plain mutable Record', () => {
-	it('shallow-copies the input into a plain mutable object', () => {
-		const input = { a: 1, b: 'x' }
-		const result = rowOf(input)
-		expect(result).toEqual(input)
-		expect(result).not.toBe(input)
-	})
-
-	it('an empty input yields an empty object', () => {
-		expect(rowOf({})).toEqual({})
 	})
 })
 
