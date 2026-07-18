@@ -31,13 +31,29 @@ export interface TerminalRoute {
 }
 
 /**
+ * The `token` gate a {@link TerminalRoutesOptions} may configure — a plain string compared for
+ * equality against the `x-orkestrel-token` header, OR a validator function the consumer fully
+ * controls, enabling expiry/rotation (a JWT `exp` check, a revocation-list lookup, anything
+ * time-varying) that a fixed string cannot express. `undefined` disables the auth check entirely.
+ */
+export type TerminalToken = string | ((value: string | undefined) => boolean)
+
+/**
  * Options for {@link import('./factories.js').createTerminalRoutes}.
  *
  * @remarks
  * - `path` — the shared `:name`-templated path both the GET (SSE) and POST (answer) routes
  *   mount under; defaults to {@link import('./constants.js').TERMINAL_ROUTES_PATH}.
- * - `token` — when set, both routes require the `x-orkestrel-token` header to equal it (a
- *   missing/mismatched header is rejected `401`); omitted ⇒ no auth check.
+ * - `token` — a {@link TerminalToken}: a string is compared for equality against the
+ *   `x-orkestrel-token` header; a function receives the header's value (`undefined` when absent)
+ *   and returns whether it validates, letting the consumer roll/expire tokens out-of-band.
+ *   Validated at GET connect, on EVERY POST, and RE-VALIDATED on every keepalive tick of a live
+ *   SSE stream — a stream whose presented token stops validating (rotated, expired, revoked) is
+ *   torn down (the abort/self-heal teardown path, no `shutdown` frame) rather than left open
+ *   forever; the client reconnects and re-authenticates. Omitted ⇒ no auth check. Because
+ *   re-validation only happens on the keepalive tick, the revocation window equals the keepalive
+ *   interval — a token rejected/expired between ticks keeps streaming until the next one. A
+ *   validator function that THROWS is treated as rejection (fail-closed) at every call site.
  * - `keepalive` — the SSE comment-ping interval in milliseconds; defaults to
  *   {@link import('./constants.js').TERMINAL_KEEPALIVE_MS}.
  * - `timer` — the injected {@link TimerHandler} driving the keepalive interval (default the host
@@ -49,7 +65,7 @@ export interface TerminalRoute {
  */
 export interface TerminalRoutesOptions {
 	readonly path?: string
-	readonly token?: string
+	readonly token?: TerminalToken
 	readonly keepalive?: number
 	readonly timer?: TimerHandler
 	readonly limit?: number

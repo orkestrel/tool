@@ -1,5 +1,10 @@
 import type { PendingPrompt, TerminalManagerInterface, TimerCancel } from '@orkestrel/terminal'
-import type { TerminalRoute, TerminalRouteContext, TerminalRoutesOptions } from './types.js'
+import type {
+	TerminalRoute,
+	TerminalRouteContext,
+	TerminalRoutesOptions,
+	TerminalToken,
+} from './types.js'
 import {
 	defaultTimer,
 	HEADER_TOKEN,
@@ -37,9 +42,11 @@ import { TERMINAL_KEEPALIVE_MS, TERMINAL_ROUTES_PATH } from './constants.js'
  *   `manager.answer` — `204` on success, `404` for `'terminal'`, `422` for `'unknown'` / `'rejected'`.
  *
  * @remarks
- * The `token` option is checked once per request at connect — a token that expires mid-stream
- * is not re-validated. Concurrent POST answerers race first-write-wins — a late POST for an
- * already-settled prompt returns `422`.
+ * The `token` option (a string OR a validator function — {@link TerminalToken}) is validated at
+ * GET connect, on EVERY POST, and RE-VALIDATED on every keepalive tick of a live SSE stream — a
+ * stream whose presented token stops validating is torn down rather than left streaming forever.
+ * Concurrent POST answerers race first-write-wins — a late POST for an already-settled prompt
+ * returns `422`.
  *
  * @param manager - The `TerminalManagerInterface` (`@orkestrel/terminal`) whose endpoints are bridged
  * @param options - See {@link TerminalRoutesOptions}
@@ -61,7 +68,7 @@ export function createTerminalRoutes(
 	options?: TerminalRoutesOptions,
 ): readonly TerminalRoute[] {
 	const path = options?.path ?? TERMINAL_ROUTES_PATH
-	const token = options?.token
+	const token: TerminalToken | undefined = options?.token
 	const keepalive = options?.keepalive ?? TERMINAL_KEEPALIVE_MS
 	const timer = options?.timer ?? defaultTimer
 	const limit = options?.limit ?? DEFAULT_BODY_LIMIT
@@ -100,9 +107,25 @@ export function createTerminalRoutes(
 		return { ok: true, text: new TextDecoder().decode(buffer) }
 	}
 
-	function authorized(request: Request): boolean {
+	// Single validation closure covering all three token shapes ({@link TerminalToken}):
+	// `undefined` disables the check, a string is compared for equality, and a function is a
+	// consumer-controlled validator — used at GET connect, on every POST, and re-run on every
+	// keepalive tick against the connection's captured presented header value, so a token that
+	// rotates or expires mid-stream tears the stream down instead of streaming forever. A
+	// validator that THROWS is treated as invalid (fail-closed) at all three call sites — a throw
+	// escaping the keepalive tick's timer callback would otherwise skip teardown entirely and
+	// crash the timer host.
+	function valid(presented: string | undefined): boolean {
 		if (token === undefined) return true
-		return request.headers.get(HEADER_TOKEN) === token
+		try {
+			return typeof token === 'function' ? token(presented) : presented === token
+		} catch {
+			return false
+		}
+	}
+
+	function authorized(request: Request): boolean {
+		return valid(request.headers.get(HEADER_TOKEN) ?? undefined)
 	}
 
 	const get: TerminalRoute = {
@@ -112,6 +135,7 @@ export function createTerminalRoutes(
 			if (!authorized(request)) return new Response(null, { status: 401 })
 			const name = context.params.name
 			if (manager.terminal(name) === undefined) return new Response(null, { status: 404 })
+			const presented = request.headers.get(HEADER_TOKEN) ?? undefined
 
 			const stream = openStream()
 			for (const prompt of manager.pending(name)) {
@@ -158,6 +182,10 @@ export function createTerminalRoutes(
 
 			cancelKeepalive = timer(function ping(): void {
 				if (stream.closed) {
+					teardown()
+					return
+				}
+				if (!valid(presented)) {
 					teardown()
 					return
 				}

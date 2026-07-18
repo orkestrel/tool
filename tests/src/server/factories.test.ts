@@ -221,6 +221,214 @@ describe('createTerminalRoutes', () => {
 		)
 		expect(response.status).toBe(401)
 	})
+
+	it('function token: a live stream is torn down on the keepalive tick once the validator starts rejecting the presented value, and does not re-arm', async () => {
+		const fake = createFakeTimer()
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		let acceptable = true
+		const routes = createTerminalRoutes(manager, {
+			token: (value) => value === 'rotating' && acceptable,
+			timer: fake.timer,
+			keepalive: 1000,
+		})
+		const get = findRoute(routes, 'GET')
+
+		const baselinePending = manager.emitter.count('pending')
+		const baselineExpire = manager.emitter.count('expire')
+
+		const controller = new AbortController()
+		const response = await get.handler(
+			new Request('http://x/terminals/assistant', {
+				headers: { [HEADER_TOKEN]: 'rotating' },
+				signal: controller.signal,
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(200)
+
+		// Park a prompt so a live frame is available before the tick.
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'still valid?' })
+		asked.catch(() => {})
+		const live = await readAvailable(response)
+		expect(live).toContain('still valid?')
+
+		// Flip the validator to reject — simulates a rotated/expired/revoked token.
+		acceptable = false
+
+		// Fire the armed keepalive tick — it must re-validate and tear down instead of pinging.
+		fake.fire(0)
+		const afterTick = await readAvailable(response)
+		expect(afterTick.startsWith(':')).toBe(false)
+
+		// Teardown ran: manager listener counts back to baseline, keepalive not re-armed.
+		expect(manager.emitter.count('pending')).toBe(baselinePending)
+		expect(manager.emitter.count('expire')).toBe(baselineExpire)
+		expect(fake.armed).toBe(1)
+
+		// A fresh GET with the still-bad validator state 401s.
+		const stillBad = await get.handler(
+			new Request('http://x/terminals/assistant', {
+				headers: { [HEADER_TOKEN]: 'rotating' },
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(stillBad.status).toBe(401)
+
+		// Restore the validator — connect succeeds again.
+		acceptable = true
+		const restored = await get.handler(
+			new Request('http://x/terminals/assistant', {
+				headers: { [HEADER_TOKEN]: 'rotating' },
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(restored.status).toBe(200)
+	})
+
+	it('static string token: keepalive re-validation is a no-op for a live stream — several ticks keep it open with comments written', async () => {
+		const fake = createFakeTimer()
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, {
+			token: 'secret',
+			timer: fake.timer,
+			keepalive: 1000,
+		})
+		const get = findRoute(routes, 'GET')
+
+		const controller = new AbortController()
+		const response = await get.handler(
+			new Request('http://x/terminals/assistant', {
+				headers: { [HEADER_TOKEN]: 'secret' },
+				signal: controller.signal,
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(200)
+
+		for (let i = 0; i < 3; i++) {
+			fake.fire(i)
+			const tick = await readAvailable(response)
+			expect(tick.startsWith(':')).toBe(true)
+		}
+		expect(fake.armed).toBe(4)
+
+		controller.abort()
+		await readAvailable(response)
+	})
+
+	it('POST 401s when a function token now rejects the presented value, manager untouched', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		let acceptable = true
+		const routes = createTerminalRoutes(manager, { token: () => acceptable })
+		const post = findRoute(routes, 'POST')
+
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		asked.catch(() => {})
+		const before = manager.pending('assistant')
+
+		acceptable = false
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', {
+				method: 'POST',
+				body: JSON.stringify({ id: 'x', value: 1 }),
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(401)
+		expect(manager.pending('assistant')).toEqual(before)
+	})
+
+	it('GET 401s when the token validator THROWS at connect (fail-closed, not an uncaught exception)', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, {
+			token: () => {
+				throw new Error('boom')
+			},
+		})
+		const get = findRoute(routes, 'GET')
+		const response = await get.handler(new Request('http://x/terminals/assistant'), {
+			params: { name: 'assistant' },
+		})
+		expect(response.status).toBe(401)
+	})
+
+	it('POST 401s when the token validator THROWS (fail-closed), manager untouched', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, {
+			token: () => {
+				throw new Error('boom')
+			},
+		})
+		const post = findRoute(routes, 'POST')
+
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		asked.catch(() => {})
+		const before = manager.pending('assistant')
+
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', {
+				method: 'POST',
+				body: JSON.stringify({ id: 'x', value: 1 }),
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(401)
+		expect(manager.pending('assistant')).toEqual(before)
+	})
+
+	it('a live stream is torn down on the keepalive tick when the validator THROWS mid-stream (fail-closed), not re-armed, no uncaught exception', async () => {
+		const fake = createFakeTimer()
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		let shouldThrow = false
+		const routes = createTerminalRoutes(manager, {
+			token: (value) => {
+				if (shouldThrow) throw new Error('boom')
+				return value === 'rotating'
+			},
+			timer: fake.timer,
+			keepalive: 1000,
+		})
+		const get = findRoute(routes, 'GET')
+
+		const baselinePending = manager.emitter.count('pending')
+		const baselineExpire = manager.emitter.count('expire')
+
+		const controller = new AbortController()
+		const response = await get.handler(
+			new Request('http://x/terminals/assistant', {
+				headers: { [HEADER_TOKEN]: 'rotating' },
+				signal: controller.signal,
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(200)
+
+		// Park a prompt so a live frame is available before the tick.
+		const asked = manager.ask('human', 'assistant', 'input', { message: 'still valid?' })
+		asked.catch(() => {})
+		const live = await readAvailable(response)
+		expect(live).toContain('still valid?')
+
+		// Flip the validator to THROW — simulates a JWT `exp` check or revocation lookup blowing up.
+		shouldThrow = true
+
+		// Fire the armed keepalive tick — the throw must be caught and treated as invalid, tearing
+		// the stream down instead of escaping into the timer host.
+		expect(() => fake.fire(0)).not.toThrow()
+		const afterTick = await readAvailable(response)
+		expect(afterTick.startsWith(':')).toBe(false)
+
+		// Teardown ran: manager listener counts back to baseline, keepalive not re-armed.
+		expect(manager.emitter.count('pending')).toBe(baselinePending)
+		expect(manager.emitter.count('expire')).toBe(baselineExpire)
+		expect(fake.armed).toBe(1)
+	})
 })
 
 // ── pressure: mount churn — repeated GET connect→abort cycles ────────────────
