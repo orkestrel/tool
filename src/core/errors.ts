@@ -22,6 +22,9 @@ import type { AgentToolErrorCode } from './types.js'
  * (`DEADLOCK`), a prompt that expired before it was answered (`EXPIRE`), or an answer that
  * failed to apply (`ANSWER`) — the last three thrown by
  * {@link import('./factories.js').createPromptTool} / {@link import('./factories.js').createAnswerTool}.
+ * The upcoming database / relation tools (SRC-1's later units) will throw it too: a typed
+ * `@orkestrel/database` failure re-surfaces as `DATABASE`, a typed `@orkestrel/relation` failure
+ * as `RELATION` — each carrying the package's own granular error code in `context`.
  *
  * @remarks
  * Carries a machine-readable `code` (see {@link import('./types.js').AgentToolErrorCode}) and

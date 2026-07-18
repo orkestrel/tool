@@ -1,8 +1,10 @@
 import type { AgentToolArguments } from '@src/core'
 import type { ToolResult } from '@orkestrel/agent'
 import type { WorkflowDraft } from '@src/core'
+import type { DatabaseInterface } from '@orkestrel/database'
 import type { TaskContext, TaskControllerInterface, WorkflowDefinition } from '@orkestrel/workflow'
 import type { TerminalManagerInterface, TimerCancel, TimerHandler } from '@orkestrel/terminal'
+import type { RelationManagerInterface } from '@orkestrel/relation'
 import {
 	buildToolResult,
 	createAgent,
@@ -13,7 +15,7 @@ import {
 	createToolManager,
 	createWorkspaceManager,
 } from '@orkestrel/agent'
-import { isRecord } from '@orkestrel/contract'
+import { booleanShape, isRecord, numberShape, stringShape } from '@orkestrel/contract'
 import {
 	createMemoryWorkflowStore,
 	createWorkflowRunner,
@@ -26,16 +28,21 @@ import {
 	createAgentFunction,
 	createAgentTool,
 	createAnswerTool,
+	createDatabaseTool,
 	createDescribeTool,
+	createMemoryDefinitionStore,
 	createPromptTool,
+	createRelationTool,
 	createToolFunction,
 	createWorkflowDraftContract,
 	createWorkflowTool,
 	createWorkspaceTool,
+	DATABASE_TOOL_NAME,
 	DESCRIBE_TOOL_NAME,
 	isAgentToolError,
 	MAX_WORKFLOW_DEPTH,
 	PROMPT_TOOL_NAME,
+	RELATION_TOOL_NAME,
 	WORKFLOW_TOOL_DESCRIPTION,
 	WORKFLOW_TOOL_NAME,
 	WORKFLOW_TOOL_SUMMARY,
@@ -43,6 +50,8 @@ import {
 	WORKSPACE_TOOL_SUMMARY,
 } from '@src/core'
 import { createTerminalManager, TerminalError } from '@orkestrel/terminal'
+import { createDatabase, createMemoryDriver, generateUUID } from '@orkestrel/database'
+import { belongsTo, createRelationManager, hasMany, hasThrough } from '@orkestrel/relation'
 import { describe, expect, it } from 'vitest'
 import { createRecorder, createScriptedProvider, waitForDelay } from '../../setup.js'
 
@@ -1289,5 +1298,1088 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 
 		// The unrelated pending ask is untouched — still parked, not settled.
 		expect(manager.pending('t2')).toHaveLength(1)
+	})
+})
+
+// ── createDatabaseTool — create / query / mutate through one operation-discriminated call ────
+
+// Mixed bare-kind and `{type,optional}` column specs — the call-args shape `'create'`/`'migrate'`
+// accept, mirroring stores.test.ts's `fullDefinition` fixture.
+function itemsTables(): Readonly<Record<string, unknown>> {
+	return {
+		items: {
+			columns: {
+				id: 'string',
+				name: 'string',
+				price: { type: 'number', optional: true },
+				active: 'boolean',
+			},
+		},
+	}
+}
+
+function itemRow(
+	id: string,
+	overrides: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, unknown>> {
+	return { id, name: `item-${id}`, price: 10, active: true, ...overrides }
+}
+
+// Builds a LIVE `DatabaseInterface` handle directly (bypassing the tool) — used by the
+// readonly-gate suite where a pre-existing handle is the fixture.
+function buildItemsHandle(): DatabaseInterface {
+	return createDatabase({
+		driver: createMemoryDriver(),
+		tables: {
+			items: {
+				id: stringShape(),
+				name: stringShape(),
+				price: numberShape(),
+				active: booleanShape(),
+			},
+		},
+	})
+}
+
+describe('createDatabaseTool — create', () => {
+	it('happy path: mixed bare-kind and {type,optional} column specs mint a live database', async () => {
+		const tool = createDatabaseTool()
+		expect(tool.name).toBe(DATABASE_TOOL_NAME)
+		const result = await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		expect(result).toEqual({ id: 'shop', tables: ['items'] })
+	})
+
+	it('honors name / description overrides', () => {
+		const tool = createDatabaseTool({ name: 'db', description: 'manage databases' })
+		expect(tool.name).toBe('db')
+		expect(tool.description).toBe('manage databases')
+	})
+})
+
+describe('createDatabaseTool — tables', () => {
+	it('lists table name/primary/columns for a created database', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		const result = await tool.execute({ operation: 'tables', id: 'shop' })
+		expect(isRecord(result) && Array.isArray(result.tables) ? result.tables : []).toEqual([
+			expect.objectContaining({ name: 'items', primary: 'id' }),
+		])
+	})
+})
+
+describe('createDatabaseTool — get', () => {
+	it('single key resolves { row }, an array resolves { rows } with misses left absent', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+
+		const single = await tool.execute({ operation: 'get', id: 'shop', table: 'items', key: 'a' })
+		expect(isRecord(single) ? single.row : undefined).toEqual(itemRow('a'))
+
+		const many = await tool.execute({
+			operation: 'get',
+			id: 'shop',
+			table: 'items',
+			key: ['a', 'missing'],
+		})
+		expect(isRecord(many) && Array.isArray(many.rows) ? many.rows : []).toEqual([
+			itemRow('a'),
+			undefined,
+		])
+	})
+})
+
+describe('createDatabaseTool — records (serialized criteria)', () => {
+	it('conditions/order/limit/offset are honored via the SERIALIZED criteria form', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({
+			operation: 'add',
+			id: 'shop',
+			table: 'items',
+			row: [itemRow('a', { price: 5 }), itemRow('b', { price: 15 }), itemRow('c', { price: 25 })],
+		})
+
+		const result = await tool.execute({
+			operation: 'records',
+			id: 'shop',
+			table: 'items',
+			criteria: {
+				conditions: [{ column: 'price', operator: 'above', values: [1] }],
+				order: [{ column: 'price', direction: 'descending' }],
+				limit: 2,
+				offset: 1,
+			},
+		})
+		expect(isRecord(result) && Array.isArray(result.rows) ? result.rows : []).toEqual([
+			itemRow('b', { price: 15 }),
+			itemRow('a', { price: 5 }),
+		])
+		expect(isRecord(result) ? result.count : undefined).toBe(2)
+		expect(isRecord(result) ? result.truncated : undefined).toBe(false)
+	})
+})
+
+describe('createDatabaseTool — count', () => {
+	it('counts rows matching criteria', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({
+			operation: 'add',
+			id: 'shop',
+			table: 'items',
+			row: [itemRow('a'), itemRow('b'), itemRow('c', { active: false })],
+		})
+		const result = await tool.execute({
+			operation: 'count',
+			id: 'shop',
+			table: 'items',
+			criteria: { conditions: [{ column: 'active', operator: 'equals', values: [true] }] },
+		})
+		expect(result).toEqual({ count: 2 })
+	})
+})
+
+describe('createDatabaseTool — aggregate', () => {
+	it('computes all five aggregate functions over a numeric column', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({
+			operation: 'add',
+			id: 'shop',
+			table: 'items',
+			row: [itemRow('a', { price: 5 }), itemRow('b', { price: 15 }), itemRow('c', { price: 25 })],
+		})
+
+		const functions = ['count', 'sum', 'average', 'minimum', 'maximum'] as const
+		const expected: Readonly<Record<(typeof functions)[number], number>> = {
+			count: 3,
+			sum: 45,
+			average: 15,
+			minimum: 5,
+			maximum: 25,
+		}
+		for (const fn of functions) {
+			const result = await tool.execute({
+				operation: 'aggregate',
+				id: 'shop',
+				table: 'items',
+				function: fn,
+				column: 'price',
+			})
+			expect(result).toEqual({ value: expected[fn] })
+		}
+	})
+})
+
+describe('createDatabaseTool — add', () => {
+	it('single row resolves { key }, an array resolves { keys }', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+
+		const single = await tool.execute({
+			operation: 'add',
+			id: 'shop',
+			table: 'items',
+			row: itemRow('a'),
+		})
+		expect(single).toEqual({ key: 'a' })
+
+		const many = await tool.execute({
+			operation: 'add',
+			id: 'shop',
+			table: 'items',
+			row: [itemRow('b'), itemRow('c')],
+		})
+		expect(many).toEqual({ keys: ['b', 'c'] })
+	})
+
+	it('a duplicate key CONFLICT re-surfaces as a typed DATABASE error with context.code CONFLICT', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+
+		const error = await rejectionOf(
+			tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') }),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('DATABASE')
+		expect(isAgentToolError(error) ? error.context?.code : undefined).toBe('CONFLICT')
+	})
+})
+
+describe('createDatabaseTool — set (upsert)', () => {
+	it('inserts an absent key and replaces an existing one', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({
+			operation: 'set',
+			id: 'shop',
+			table: 'items',
+			row: itemRow('a', { price: 1 }),
+		})
+		await tool.execute({
+			operation: 'set',
+			id: 'shop',
+			table: 'items',
+			row: itemRow('a', { price: 2 }),
+		})
+
+		const result = await tool.execute({ operation: 'get', id: 'shop', table: 'items', key: 'a' })
+		expect(isRecord(result) ? result.row : undefined).toEqual(itemRow('a', { price: 2 }))
+	})
+})
+
+describe('createDatabaseTool — update', () => {
+	it('single key resolves { updated }, an array resolves { updated: [] }', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({
+			operation: 'add',
+			id: 'shop',
+			table: 'items',
+			row: [itemRow('a'), itemRow('b')],
+		})
+
+		const single = await tool.execute({
+			operation: 'update',
+			id: 'shop',
+			table: 'items',
+			key: 'a',
+			changes: { price: 99 },
+		})
+		expect(single).toEqual({ updated: true })
+
+		const many = await tool.execute({
+			operation: 'update',
+			id: 'shop',
+			table: 'items',
+			key: ['a', 'b'],
+			changes: { active: false },
+		})
+		expect(many).toEqual({ updated: [true, true] })
+	})
+
+	it('a row that fails re-validation re-surfaces as a typed DATABASE error with context.code VALIDATION', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+
+		const error = await rejectionOf(
+			tool.execute({
+				operation: 'update',
+				id: 'shop',
+				table: 'items',
+				key: 'a',
+				changes: { price: 'not-a-number' },
+			}),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('DATABASE')
+		expect(isAgentToolError(error) ? error.context?.code : undefined).toBe('VALIDATION')
+	})
+})
+
+describe('createDatabaseTool — remove', () => {
+	it('single key resolves { removed }, an array resolves { removed: [] }', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({
+			operation: 'add',
+			id: 'shop',
+			table: 'items',
+			row: [itemRow('a'), itemRow('b')],
+		})
+
+		const single = await tool.execute({ operation: 'remove', id: 'shop', table: 'items', key: 'a' })
+		expect(single).toEqual({ removed: true })
+		const many = await tool.execute({
+			operation: 'remove',
+			id: 'shop',
+			table: 'items',
+			key: ['b', 'x'],
+		})
+		expect(many).toEqual({ removed: [true, false] })
+	})
+})
+
+describe('createDatabaseTool — migrate', () => {
+	it('adding a column returns the migration plan and the new column is writable/readable afterward', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+
+		const migratedTables = {
+			items: {
+				columns: {
+					...(itemsTables().items as Readonly<{ columns: Readonly<Record<string, unknown>> }>)
+						.columns,
+					discount: { type: 'number', optional: true },
+				},
+			},
+		}
+		const result = await tool.execute({ operation: 'migrate', id: 'shop', tables: migratedTables })
+		expect(isRecord(result) ? result.migration : undefined).toEqual({
+			from: 0,
+			to: 1,
+			steps: [
+				{
+					operation: 'column.add',
+					table: 'items',
+					column: { name: 'discount', type: 'real', nullable: true },
+				},
+			],
+		})
+
+		await tool.execute({
+			operation: 'update',
+			id: 'shop',
+			table: 'items',
+			key: 'a',
+			changes: { discount: 5 },
+		})
+		const row = await tool.execute({ operation: 'get', id: 'shop', table: 'items', key: 'a' })
+		expect(isRecord(row) ? row.row : undefined).toEqual(itemRow('a', { discount: 5 }))
+	})
+
+	it('removing a column returns the migration plan and stripped rows read back without the column', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+
+		const { price: _price, ...remainingColumns } = (
+			itemsTables().items as Readonly<{ columns: Readonly<Record<string, unknown>> }>
+		).columns
+		const migratedTables = { items: { columns: remainingColumns } }
+		const result = await tool.execute({ operation: 'migrate', id: 'shop', tables: migratedTables })
+		expect(isRecord(result) ? result.migration : undefined).toEqual({
+			from: 0,
+			to: 1,
+			steps: [{ operation: 'column.remove', table: 'items', column: 'price' }],
+		})
+
+		// MemoryDriver.migrate applies `migrateRows` for `column.remove` in place, so storage
+		// itself is stripped (not merely narrowed by the records()/get() contract guard).
+		const row = await tool.execute({ operation: 'get', id: 'shop', table: 'items', key: 'a' })
+		expect(isRecord(row) ? row.row : undefined).toEqual({ id: 'a', name: 'item-a', active: true })
+	})
+})
+
+describe('createDatabaseTool — destroy', () => {
+	it('drops the database; a subsequent operation throws a typed TOOL "unknown database" error', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		const result = await tool.execute({ operation: 'destroy', id: 'shop' })
+		expect(result).toEqual({ id: 'shop', destroyed: true })
+
+		const error = await rejectionOf(tool.execute({ operation: 'tables', id: 'shop' }))
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(
+			isAgentToolError(error) && typeof error.message === 'string'
+				? error.message.includes('unknown database')
+				: false,
+		).toBe(true)
+	})
+})
+
+describe('createDatabaseTool — error paths', () => {
+	it('an unknown id (no cached handle, no store) throws a typed TOOL error', async () => {
+		const tool = createDatabaseTool()
+		const error = await rejectionOf(tool.execute({ operation: 'tables', id: 'missing' }))
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+	})
+
+	it('an unknown driver name on create throws a typed TOOL error', async () => {
+		const tool = createDatabaseTool()
+		const error = await rejectionOf(
+			tool.execute({ operation: 'create', id: 'shop', tables: itemsTables(), driver: 'nope' }),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+	})
+
+	it('a duplicate create (same id twice) throws a typed TOOL error', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		const error = await rejectionOf(
+			tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() }),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+	})
+
+	it('malformed args (missing required fields) throw a typed TOOL error', async () => {
+		const tool = createDatabaseTool()
+		const error = await rejectionOf(tool.execute({ operation: 'create' }))
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+
+		const badOperation = await rejectionOf(tool.execute({ operation: 'nope', id: 'shop' }))
+		expect(isAgentToolError(badOperation) ? badOperation.code : undefined).toBe('TOOL')
+	})
+
+	it('a row that fails validation on add re-surfaces as a typed DATABASE error with context.code VALIDATION', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		const error = await rejectionOf(
+			tool.execute({
+				operation: 'add',
+				id: 'shop',
+				table: 'items',
+				row: { id: 'a', name: 'x', price: 1, active: 'not-a-boolean' },
+			}),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('DATABASE')
+		expect(isAgentToolError(error) ? error.context?.code : undefined).toBe('VALIDATION')
+	})
+})
+
+describe('createDatabaseTool — readonly gates mutations, leaves reads open', () => {
+	it('create/add/set/update/remove/migrate/destroy each throw TOOL; tables/get/records/count/aggregate still work', async () => {
+		const handle = buildItemsHandle()
+		await handle.table('items').add([{ id: 'a', name: 'x', price: 1, active: true }])
+		const tool = createDatabaseTool({ readonly: true, databases: { shop: handle } })
+
+		const mutations: ReadonlyArray<Readonly<Record<string, unknown>>> = [
+			{ operation: 'create', id: 'other', tables: itemsTables() },
+			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('b') },
+			{ operation: 'set', id: 'shop', table: 'items', row: itemRow('a') },
+			{ operation: 'update', id: 'shop', table: 'items', key: 'a', changes: { price: 2 } },
+			{ operation: 'remove', id: 'shop', table: 'items', key: 'a' },
+			{ operation: 'migrate', id: 'shop', tables: itemsTables() },
+			{ operation: 'destroy', id: 'shop' },
+		]
+		for (const call of mutations) {
+			const error = await rejectionOf(tool.execute(call))
+			expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		}
+
+		expect(await tool.execute({ operation: 'tables', id: 'shop' })).toEqual({
+			tables: [expect.objectContaining({ name: 'items', primary: 'id' })],
+		})
+		expect(await tool.execute({ operation: 'get', id: 'shop', table: 'items', key: 'a' })).toEqual({
+			row: { id: 'a', name: 'x', price: 1, active: true },
+		})
+		expect(await tool.execute({ operation: 'records', id: 'shop', table: 'items' })).toEqual({
+			rows: [{ id: 'a', name: 'x', price: 1, active: true }],
+			count: 1,
+			truncated: false,
+			limit: 1000,
+		})
+		expect(await tool.execute({ operation: 'count', id: 'shop', table: 'items' })).toEqual({
+			count: 1,
+		})
+		expect(
+			await tool.execute({
+				operation: 'aggregate',
+				id: 'shop',
+				table: 'items',
+				function: 'count',
+				column: 'id',
+			}),
+		).toEqual({ value: 1 })
+	})
+})
+
+describe('createDatabaseTool — truncation & offset paging', () => {
+	it('records over a small limit reports truncated:true, count == limit; offset paging walks the rest', async () => {
+		const tool = createDatabaseTool({ limit: 2 })
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({
+			operation: 'add',
+			id: 'shop',
+			table: 'items',
+			row: [itemRow('a'), itemRow('b'), itemRow('c'), itemRow('d'), itemRow('e')],
+		})
+
+		const collected: unknown[] = []
+		let offset = 0
+		for (let page = 0; page < 3; page++) {
+			const result = await tool.execute({
+				operation: 'records',
+				id: 'shop',
+				table: 'items',
+				criteria: { order: [{ column: 'id', direction: 'ascending' }], offset },
+			})
+			if (!isRecord(result) || !Array.isArray(result.rows)) throw new Error('unreachable')
+			expect(result.count).toBe(result.rows.length)
+			collected.push(...result.rows)
+			offset += result.rows.length
+			if (result.truncated !== true) break
+		}
+		expect(collected).toEqual([
+			itemRow('a'),
+			itemRow('b'),
+			itemRow('c'),
+			itemRow('d'),
+			itemRow('e'),
+		])
+
+		const first = await tool.execute({
+			operation: 'records',
+			id: 'shop',
+			table: 'items',
+			criteria: { order: [{ column: 'id', direction: 'ascending' }] },
+		})
+		expect(isRecord(first) ? first.truncated : undefined).toBe(true)
+		expect(isRecord(first) ? first.count : undefined).toBe(2)
+	})
+})
+
+describe('createDatabaseTool — lazy re-mint over a shared store', () => {
+	it('a second tool over the SAME store re-mints the handle; destroy through it deletes the store definition', async () => {
+		const store = createMemoryDefinitionStore()
+		// A shared driver instance (not a fresh one per tool) so the re-minted handle reads the
+		// SAME underlying storage — proving the re-mint itself works, not just that it doesn't throw.
+		const sharedDriver = createMemoryDriver()
+		const drivers = { memory: () => sharedDriver }
+		const toolA = createDatabaseTool({ store, drivers })
+		await toolA.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await toolA.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+
+		const toolB = createDatabaseTool({ store, drivers })
+		const result = await toolB.execute({ operation: 'records', id: 'shop', table: 'items' })
+		expect(isRecord(result) && Array.isArray(result.rows) ? result.rows : []).toEqual([
+			itemRow('a'),
+		])
+
+		await toolB.execute({ operation: 'destroy', id: 'shop' })
+		expect(await store.get('shop')).toBeUndefined()
+	})
+})
+
+describe('createDatabaseTool — timeout option threads without breaking a normal op', () => {
+	it('a configured timeout does not interfere with an ordinary create/add/records round trip', async () => {
+		const tool = createDatabaseTool({ timeout: 5_000 })
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+		const result = await tool.execute({ operation: 'records', id: 'shop', table: 'items' })
+		expect(isRecord(result) && Array.isArray(result.rows) ? result.rows : []).toEqual([
+			itemRow('a'),
+		])
+	})
+})
+
+describe('pressure: createDatabaseTool — 500-row batch add, full paging, migrate, slice update, destroy', () => {
+	it('exact counts survive the round trip', async () => {
+		const tool = createDatabaseTool({ limit: 100 })
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+
+		const total = 500
+		const batchSize = 50
+		for (let start = 0; start < total; start += batchSize) {
+			const batch = Array.from({ length: batchSize }, (_unused, offset) =>
+				itemRow(String(start + offset).padStart(4, '0')),
+			)
+			const added = await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: batch })
+			expect(isRecord(added) && Array.isArray(added.keys) ? added.keys.length : 0).toBe(batchSize)
+		}
+
+		const collected: unknown[] = []
+		let offset = 0
+		for (;;) {
+			const result = await tool.execute({
+				operation: 'records',
+				id: 'shop',
+				table: 'items',
+				criteria: { order: [{ column: 'id', direction: 'ascending' }], offset },
+			})
+			if (!isRecord(result) || !Array.isArray(result.rows)) throw new Error('unreachable')
+			collected.push(...result.rows)
+			offset += result.rows.length
+			if (result.truncated !== true) break
+		}
+		expect(collected).toHaveLength(total)
+
+		const migratedTables = {
+			items: {
+				columns: {
+					...(itemsTables().items as Readonly<{ columns: Readonly<Record<string, unknown>> }>)
+						.columns,
+					tag: { type: 'string', optional: true },
+				},
+			},
+		}
+		const migration = await tool.execute({
+			operation: 'migrate',
+			id: 'shop',
+			tables: migratedTables,
+		})
+		expect(
+			isRecord(migration) && isRecord(migration.migration) ? migration.migration.to : undefined,
+		).toBe(1)
+
+		const sliceIds = Array.from({ length: 25 }, (_unused, index) => String(index).padStart(4, '0'))
+		const updated = await tool.execute({
+			operation: 'update',
+			id: 'shop',
+			table: 'items',
+			key: sliceIds,
+			changes: { tag: 'tagged' },
+		})
+		expect(isRecord(updated) && Array.isArray(updated.updated) ? updated.updated : []).toEqual(
+			Array.from({ length: 25 }, () => true),
+		)
+
+		const tagged = await tool.execute({
+			operation: 'count',
+			id: 'shop',
+			table: 'items',
+			criteria: { conditions: [{ column: 'tag', operator: 'equals', values: ['tagged'] }] },
+		})
+		expect(tagged).toEqual({ count: 25 })
+
+		const untaggedRow = await tool.execute({
+			operation: 'get',
+			id: 'shop',
+			table: 'items',
+			key: '0499',
+		})
+		expect(
+			isRecord(untaggedRow) && isRecord(untaggedRow.row) ? 'tag' in untaggedRow.row : false,
+		).toBe(false)
+
+		const taggedRow = await tool.execute({
+			operation: 'get',
+			id: 'shop',
+			table: 'items',
+			key: '0000',
+		})
+		expect(isRecord(taggedRow) ? taggedRow.row : undefined).toEqual(
+			itemRow('0000', { tag: 'tagged' }),
+		)
+
+		const destroyed = await tool.execute({ operation: 'destroy', id: 'shop' })
+		expect(destroyed).toEqual({ id: 'shop', destroyed: true })
+	})
+})
+
+// ── createRelationTool — traverse/edit `@orkestrel/relation` relationships ───
+
+// A shared 4-table relation graph: `accounts` has-many `contacts` and has-through `reps` via
+// the `accountReps` junction; `contacts` belongs-to `account`; `reps` has-through `accounts`
+// via the SAME junction (the inverse side) — enough shapes to exercise belongs/many/through.
+function buildRelationDatabase(): DatabaseInterface {
+	return createDatabase({
+		driver: createMemoryDriver(),
+		tables: {
+			accounts: { id: stringShape(), name: stringShape() },
+			contacts: { id: stringShape(), name: stringShape(), accountId: stringShape() },
+			reps: { id: stringShape(), name: stringShape() },
+			accountReps: { id: stringShape(), accountId: stringShape(), repId: stringShape() },
+		},
+		key: generateUUID,
+	})
+}
+
+function buildRelationManager(): RelationManagerInterface {
+	return createRelationManager({
+		database: buildRelationDatabase(),
+		relations: {
+			accounts: {
+				contacts: hasMany('accountId'),
+				reps: hasThrough('accountReps', 'accountId', 'repId', 'reps'),
+			},
+			contacts: { account: belongsTo('accountId', 'accounts') },
+			reps: { accounts: hasThrough('accountReps', 'repId', 'accountId', 'accounts') },
+		},
+	})
+}
+
+async function seedAccount(
+	manager: RelationManagerInterface,
+	id: string,
+	name = `account-${id}`,
+): Promise<void> {
+	await manager.model('accounts').table.set({ id, name })
+}
+
+async function seedContact(
+	manager: RelationManagerInterface,
+	id: string,
+	accountId: string,
+	name = `contact-${id}`,
+): Promise<void> {
+	await manager.model('contacts').table.set({ id, name, accountId })
+}
+
+async function seedRep(
+	manager: RelationManagerInterface,
+	id: string,
+	name = `rep-${id}`,
+): Promise<void> {
+	await manager.model('reps').table.set({ id, name })
+}
+
+describe('createRelationTool — manager resolution', () => {
+	it('a single registered manager is used by default when the call omits `manager`', async () => {
+		const manager = buildRelationManager()
+		await seedAccount(manager, 'a1', 'Acme')
+		const tool = createRelationTool({ managers: { shop: manager } })
+		const result = await tool.execute({
+			operation: 'load',
+			model: 'accounts',
+			key: 'a1',
+			include: [],
+		})
+		expect(isRecord(result) ? result.row : undefined).toMatchObject({ id: 'a1', name: 'Acme' })
+	})
+
+	it('an explicit `manager` selects among two registered managers', async () => {
+		const shop = buildRelationManager()
+		const other = buildRelationManager()
+		await seedAccount(shop, 'a1', 'Shop Acme')
+		await seedAccount(other, 'a1', 'Other Acme')
+		const tool = createRelationTool({ managers: { shop, other } })
+		const result = await tool.execute({
+			operation: 'load',
+			manager: 'other',
+			model: 'accounts',
+			key: 'a1',
+			include: [],
+		})
+		expect(isRecord(result) ? result.row : undefined).toMatchObject({ name: 'Other Acme' })
+	})
+
+	it('an unknown `manager` name throws a typed TOOL error listing the registered manager keys', async () => {
+		const manager = buildRelationManager()
+		const tool = createRelationTool({ managers: { shop: manager } })
+		const error = await rejectionOf(
+			tool.execute({
+				operation: 'load',
+				manager: 'ghost',
+				model: 'accounts',
+				key: 'a1',
+				include: [],
+			}),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isAgentToolError(error) ? error.context?.managers : undefined).toEqual(['shop'])
+	})
+
+	it('two registered managers with an omitted `manager` throws a typed TOOL ambiguous error', async () => {
+		const shop = buildRelationManager()
+		const other = buildRelationManager()
+		const tool = createRelationTool({ managers: { shop, other } })
+		const error = await rejectionOf(
+			tool.execute({ operation: 'load', model: 'accounts', key: 'a1', include: [] }),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isAgentToolError(error) ? error.context?.managers : undefined).toEqual(['shop', 'other'])
+	})
+})
+
+describe('createRelationTool — model resolution', () => {
+	it('an unknown `model` name throws a typed TOOL error listing the registered model names', async () => {
+		const manager = buildRelationManager()
+		const tool = createRelationTool({ managers: { shop: manager } })
+		const error = await rejectionOf(
+			tool.execute({ operation: 'load', model: 'ghost', key: 'a1', include: [] }),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		const models = isAgentToolError(error) ? error.context?.models : undefined
+		expect(Array.isArray(models) ? [...models].sort() : []).toEqual([
+			'accounts',
+			'contacts',
+			'reps',
+		])
+	})
+})
+
+describe('createRelationTool — load', () => {
+	it('a single key with a nested dot-path include round-trips the related row through its own relation', async () => {
+		const manager = buildRelationManager()
+		await seedAccount(manager, 'a1', 'Acme')
+		await seedContact(manager, 'c1', 'a1', 'Wile')
+		const tool = createRelationTool({ managers: { shop: manager } })
+		const result = await tool.execute({
+			operation: 'load',
+			model: 'accounts',
+			key: 'a1',
+			include: ['contacts.account'],
+		})
+		const row = isRecord(result) ? result.row : undefined
+		const contacts = isRecord(row) && Array.isArray(row.contacts) ? row.contacts : []
+		expect(contacts).toHaveLength(1)
+		const contact = contacts[0]
+		expect(isRecord(contact) ? contact.name : undefined).toBe('Wile')
+		const account = isRecord(contact) ? contact.account : undefined
+		expect(isRecord(account) ? account.id : undefined).toBe('a1')
+	})
+
+	it('array keys resolve positionally, a miss at an index left undefined there', async () => {
+		const manager = buildRelationManager()
+		await seedAccount(manager, 'a1', 'Acme')
+		const tool = createRelationTool({ managers: { shop: manager } })
+		const result = await tool.execute({
+			operation: 'load',
+			model: 'accounts',
+			key: ['a1', 'ghost'],
+			include: [],
+		})
+		const rows = isRecord(result) && Array.isArray(result.rows) ? result.rows : []
+		expect(rows).toHaveLength(2)
+		expect(isRecord(rows[0]) ? rows[0].id : undefined).toBe('a1')
+		expect(rows[1]).toBeUndefined()
+	})
+})
+
+describe('createRelationTool — find (sort / direction / offset, truncation & paging)', () => {
+	it('sort/direction/offset are honored', async () => {
+		const manager = buildRelationManager()
+		await seedAccount(manager, 'a1', 'Alpha')
+		await seedAccount(manager, 'a2', 'Bravo')
+		await seedAccount(manager, 'a3', 'Charlie')
+		const tool = createRelationTool({ managers: { shop: manager } })
+		const result = await tool.execute({
+			operation: 'find',
+			model: 'accounts',
+			include: [],
+			sort: 'name',
+			direction: 'descending',
+			offset: 1,
+		})
+		const rows = isRecord(result) && Array.isArray(result.rows) ? result.rows : []
+		expect(rows.map((row) => (isRecord(row) ? row.name : undefined))).toEqual(['Bravo', 'Alpha'])
+	})
+
+	it('a small `limit` option reports truncated:true and count == the effective limit', async () => {
+		const manager = buildRelationManager()
+		await seedAccount(manager, 'a1')
+		await seedAccount(manager, 'a2')
+		await seedAccount(manager, 'a3')
+		const tool = createRelationTool({ managers: { shop: manager }, limit: 2 })
+		const result = await tool.execute({ operation: 'find', model: 'accounts', include: [] })
+		expect(isRecord(result) ? result.truncated : undefined).toBe(true)
+		expect(isRecord(result) ? result.count : undefined).toBe(2)
+	})
+
+	it('offset paging walks every row when driven by the reported truncation', async () => {
+		const manager = buildRelationManager()
+		for (const id of ['a1', 'a2', 'a3', 'a4', 'a5']) await seedAccount(manager, id)
+		const tool = createRelationTool({ managers: { shop: manager }, limit: 2 })
+		const collected: unknown[] = []
+		let offset = 0
+		for (let page = 0; page < 3; page++) {
+			const result = await tool.execute({
+				operation: 'find',
+				model: 'accounts',
+				include: [],
+				sort: 'id',
+				direction: 'ascending',
+				offset,
+			})
+			if (!isRecord(result) || !Array.isArray(result.rows)) throw new Error('unreachable')
+			collected.push(...result.rows)
+			offset += result.rows.length
+			if (result.truncated !== true) break
+		}
+		expect(collected.map((row) => (isRecord(row) ? row.id : undefined))).toEqual([
+			'a1',
+			'a2',
+			'a3',
+			'a4',
+			'a5',
+		])
+	})
+})
+
+describe('createRelationTool — link / unlink / links round trip on a through relation', () => {
+	it('link then unlink is reflected by a subsequent links call', async () => {
+		const manager = buildRelationManager()
+		await seedAccount(manager, 'a1')
+		await seedRep(manager, 'r1')
+		const tool = createRelationTool({ managers: { shop: manager } })
+
+		const before = await tool.execute({
+			operation: 'links',
+			model: 'accounts',
+			key: 'a1',
+			relation: 'reps',
+		})
+		expect(isRecord(before) ? before.keys : undefined).toEqual([])
+
+		const linked = await tool.execute({
+			operation: 'link',
+			model: 'accounts',
+			key: 'a1',
+			relation: 'reps',
+			target: 'r1',
+		})
+		expect(linked).toEqual({ linked: true })
+
+		const after = await tool.execute({
+			operation: 'links',
+			model: 'accounts',
+			key: 'a1',
+			relation: 'reps',
+		})
+		expect(isRecord(after) ? after.keys : undefined).toEqual(['r1'])
+
+		const unlinked = await tool.execute({
+			operation: 'unlink',
+			model: 'accounts',
+			key: 'a1',
+			relation: 'reps',
+			target: 'r1',
+		})
+		expect(unlinked).toEqual({ unlinked: true })
+
+		const removed = await tool.execute({
+			operation: 'links',
+			model: 'accounts',
+			key: 'a1',
+			relation: 'reps',
+		})
+		expect(isRecord(removed) ? removed.keys : undefined).toEqual([])
+	})
+
+	it('a `links` call over the configured limit reports truncated:true and a capped count', async () => {
+		const manager = buildRelationManager()
+		await seedAccount(manager, 'a1')
+		for (const id of ['r1', 'r2', 'r3']) {
+			await seedRep(manager, id)
+			await manager.model('accounts').link('a1', 'reps', id)
+		}
+		const tool = createRelationTool({ managers: { shop: manager }, limit: 2 })
+		const result = await tool.execute({
+			operation: 'links',
+			model: 'accounts',
+			key: 'a1',
+			relation: 'reps',
+		})
+		expect(isRecord(result) ? result.truncated : undefined).toBe(true)
+		expect(isRecord(result) && Array.isArray(result.keys) ? result.keys.length : 0).toBe(2)
+	})
+})
+
+describe('createRelationTool — depth cap', () => {
+	it('an include path deeper than the configured depth throws a typed TOOL error', async () => {
+		const manager = buildRelationManager()
+		await seedAccount(manager, 'a1')
+		const tool = createRelationTool({ managers: { shop: manager }, depth: 1 })
+		const error = await rejectionOf(
+			tool.execute({
+				operation: 'load',
+				model: 'accounts',
+				key: 'a1',
+				include: ['contacts.account'],
+			}),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+	})
+})
+
+describe('createRelationTool — error mapping (RelationError → typed RELATION)', () => {
+	it('`link` on a non-through relation surfaces context.code NOT_THROUGH', async () => {
+		const manager = buildRelationManager()
+		await seedAccount(manager, 'a1')
+		await seedContact(manager, 'c1', 'a1')
+		const tool = createRelationTool({ managers: { shop: manager } })
+		const error = await rejectionOf(
+			tool.execute({
+				operation: 'link',
+				model: 'accounts',
+				key: 'a1',
+				relation: 'contacts',
+				target: 'c1',
+			}),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('RELATION')
+		expect(isAgentToolError(error) ? error.context?.code : undefined).toBe('NOT_THROUGH')
+	})
+
+	it('an unknown relation name surfaces context.code UNKNOWN_RELATION', async () => {
+		const manager = buildRelationManager()
+		await seedAccount(manager, 'a1')
+		const tool = createRelationTool({ managers: { shop: manager } })
+		const error = await rejectionOf(
+			tool.execute({
+				operation: 'link',
+				model: 'accounts',
+				key: 'a1',
+				relation: 'ghost',
+				target: 'x',
+			}),
+		)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('RELATION')
+		expect(isAgentToolError(error) ? error.context?.code : undefined).toBe('UNKNOWN_RELATION')
+	})
+})
+
+describe('createRelationTool — advertised name/depth/limit defaults', () => {
+	it('uses RELATION_TOOL_NAME by default and honors a name override', () => {
+		const manager = buildRelationManager()
+		const tool = createRelationTool({ managers: { shop: manager } })
+		expect(tool.name).toBe(RELATION_TOOL_NAME)
+
+		const named = createRelationTool({ managers: { shop: manager }, name: 'graph' })
+		expect(named.name).toBe('graph')
+	})
+})
+
+describe('pressure: createRelationTool — 200-parent seed, nested load, 50-row link/unlink cycle', () => {
+	it('nested load resolves across the full set and link/unlink counts stay exact at every step', async () => {
+		const manager = buildRelationManager()
+		const parentCount = 200
+		for (let i = 0; i < parentCount; i++) {
+			const id = `a${String(i).padStart(4, '0')}`
+			await seedAccount(manager, id)
+			await seedContact(manager, `c${String(i).padStart(4, '0')}`, id)
+		}
+		const tool = createRelationTool({ managers: { shop: manager }, limit: 1000 })
+
+		const found = await tool.execute({
+			operation: 'find',
+			model: 'accounts',
+			include: ['contacts.account'],
+		})
+		const rows = isRecord(found) && Array.isArray(found.rows) ? found.rows : []
+		expect(rows).toHaveLength(parentCount)
+		for (const row of rows) {
+			const contacts = isRecord(row) && Array.isArray(row.contacts) ? row.contacts : []
+			expect(contacts).toHaveLength(1)
+			const contact = contacts[0]
+			const account = isRecord(contact) ? contact.account : undefined
+			expect(isRecord(account) ? account.id : undefined).toBe(isRecord(row) ? row.id : undefined)
+		}
+
+		// 50-row link/unlink cycle against a single parent's `reps` through relation — verify the
+		// `links` count grows to exactly 50, then shrinks back to exactly 0.
+		await seedAccount(manager, 'hub')
+		const repIds = Array.from(
+			{ length: 50 },
+			(_unused, index) => `rep${String(index).padStart(3, '0')}`,
+		)
+		for (const id of repIds) await seedRep(manager, id)
+
+		for (let i = 0; i < repIds.length; i++) {
+			await tool.execute({
+				operation: 'link',
+				model: 'accounts',
+				key: 'hub',
+				relation: 'reps',
+				target: repIds[i],
+			})
+			const result = await tool.execute({
+				operation: 'links',
+				model: 'accounts',
+				key: 'hub',
+				relation: 'reps',
+			})
+			expect(isRecord(result) ? result.count : undefined).toBe(i + 1)
+		}
+
+		for (let i = 0; i < repIds.length; i++) {
+			await tool.execute({
+				operation: 'unlink',
+				model: 'accounts',
+				key: 'hub',
+				relation: 'reps',
+				target: repIds[i],
+			})
+			const result = await tool.execute({
+				operation: 'links',
+				model: 'accounts',
+				key: 'hub',
+				relation: 'reps',
+			})
+			expect(isRecord(result) ? result.count : undefined).toBe(repIds.length - (i + 1))
+		}
 	})
 })

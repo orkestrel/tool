@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/tool",
-	"version": "0.0.2",
+	"version": "0.0.3",
 	"description": "Concrete LLM-callable tools for the @orkestrel line — workflow authoring, workspace editing, and sub-agent delegation, over the agent tool runtime, with pluggable stores. Part of the @orkestrel line.",
 	"keywords": [
 		"agent",
@@ -78,6 +78,8 @@
 	"dependencies": {
 		"@orkestrel/agent": "^0.0.5",
 		"@orkestrel/contract": "^0.0.2",
+		"@orkestrel/database": "^0.0.4",
+		"@orkestrel/relation": "^0.0.2",
 		"@orkestrel/server": "^0.0.5",
 		"@orkestrel/terminal": "^0.0.2",
 		"@orkestrel/workflow": "^0.0.5"

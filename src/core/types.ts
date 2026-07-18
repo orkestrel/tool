@@ -5,6 +5,8 @@ import type {
 } from '@orkestrel/agent'
 import type { TerminalManagerInterface } from '@orkestrel/terminal'
 import type { WorkflowRunnerInterface, WorkflowStoreInterface } from '@orkestrel/workflow'
+import type { DatabaseInterface, DriverInterface, KeyFunction } from '@orkestrel/database'
+import type { RelationManagerInterface } from '@orkestrel/relation'
 
 // Tool-package types — one interface per `create*Tool` / `create*Function` factory (AGENTS §5:
 // types are the SOURCE OF TRUTH; implementation conforms to them, never the reverse). The
@@ -350,8 +352,19 @@ export interface AgentToolArguments {
  * `ANSWER` — {@link import('./factories.js').createAnswerTool}'s answer call failed to apply
  * (an unknown prompt id, a rejected value, or the terminal itself unknown —
  * `TerminalAnswerResult.error`, `@orkestrel/terminal`).
+ * `DATABASE` — a typed `@orkestrel/database` failure (`DatabaseError`), re-surfaced with the
+ * granular {@link import('@orkestrel/database').DatabaseErrorCode} carried in `context`.
+ * `RELATION` — a typed `@orkestrel/relation` failure (`RelationError`), re-surfaced with the
+ * granular {@link import('@orkestrel/relation').RelationErrorCode} carried in `context`.
  */
-export type AgentToolErrorCode = 'TOOL' | 'DEPTH' | 'DEADLOCK' | 'EXPIRE' | 'ANSWER'
+export type AgentToolErrorCode =
+	| 'TOOL'
+	| 'DEPTH'
+	| 'DEADLOCK'
+	| 'EXPIRE'
+	| 'ANSWER'
+	| 'DATABASE'
+	| 'RELATION'
 
 /**
  * The FLAT args {@link import('./factories.js').createDescribeTool} accepts — the registered
@@ -406,4 +419,127 @@ export interface AnswerToolOptions {
 	readonly to: string
 	readonly name?: string
 	readonly description?: string
+}
+
+// === Database definition (config-only, for the upcoming database / relation tools)
+
+/** One column's declared type — a primitive shorthand, or `integer` for a whole-number `number`. */
+export type ColumnKind = 'string' | 'integer' | 'number' | 'boolean'
+
+/**
+ * One table column's spec — either a bare {@link ColumnKind} shorthand, or `{ type, optional }`
+ * when the column may be absent from a row.
+ */
+export type ColumnSpec = ColumnKind | Readonly<{ type: ColumnKind; optional?: boolean }>
+
+/**
+ * A database's table layout — one entry per table, each a flat map of column name to
+ * {@link ColumnSpec}. The small-model-facing DSL {@link import('./helpers.js').expandTables}
+ * compiles into an `@orkestrel/database` `TablesShape`.
+ */
+export type TableSpec = Readonly<
+	Record<string, Readonly<{ columns: Readonly<Record<string, ColumnSpec>> }>>
+>
+
+/**
+ * One database's CONFIG-ONLY definition — `id` + `driver` + {@link TableSpec} (+ optional `keys`),
+ * the pure-JSON blueprint the upcoming database / relation tools build a live database from.
+ *
+ * @remarks
+ * A `DatabaseDefinition` is NEVER a live handle — it is the durable, serializable config a
+ * {@link DefinitionStoreInterface} persists and a tool factory turns into a real
+ * `@orkestrel/database` `DatabaseInterface` (via `createDatabase` + {@link import('./helpers.js').expandTables})
+ * on demand. `keys`, when present, maps a table name to its primary-key column (omitted ⇒ the
+ * driver's default primary key).
+ */
+export interface DatabaseDefinition {
+	readonly id: string
+	readonly driver: string
+	readonly tables: TableSpec
+	readonly keys?: Readonly<Record<string, string>>
+}
+
+/** One opaque persisted row — the shape a `TableInterface<DatabaseDefinitionRow>`-backed store reads/writes; `definition` is narrowed with {@link import('./helpers.js').isDatabaseDefinition} on read. */
+export interface DatabaseDefinitionRow {
+	readonly id: string
+	readonly definition: unknown
+}
+
+/**
+ * The point-access persistence seam (AGENTS §5 — Stores) for {@link DatabaseDefinition} configs —
+ * the twin of `@orkestrel/terminal`'s `TerminalStoreInterface`, storing a database's CONFIG-ONLY
+ * blueprint (never a live handle). Every primitive is async; `delete` of an absent id is a no-op.
+ */
+export interface DefinitionStoreInterface {
+	get(id: string): Promise<DatabaseDefinition | undefined>
+	set(definition: DatabaseDefinition): Promise<void>
+	delete(id: string): Promise<void>
+}
+
+/**
+ * Options for {@link import('./factories.js').createDatabaseTool} — SRC-2 of the 3-unit database
+ * / relation spine, built over the SRC-1 foundation ({@link DatabaseDefinition},
+ * {@link DefinitionStoreInterface}, {@link import('./helpers.js').expandTables}).
+ *
+ * @remarks
+ * - `databases` — live `DatabaseInterface` handles to seed the tool's cache with (e.g. a
+ *   caller-constructed database it should manage alongside store-backed ones); keyed by the id a
+ *   call's `id` field addresses.
+ * - `store` — the {@link DefinitionStoreInterface} the `'create'` / `'migrate'` operations persist
+ *   their {@link DatabaseDefinition} CONFIG through, and `'destroy'` deletes from; also the source
+ *   `'get'`/every other operation resolves an id from when it isn't already cached. Omitted means
+ *   no persistence — a database created without a store lives only for the tool's lifetime.
+ * - `drivers` — registry of driver-name to `() => DriverInterface` factories a `'create'` call's
+ *   `driver` field (or a persisted definition's `driver`) resolves against. Defaults to
+ *   `{ memory: () => createMemoryDriver() }` (`@orkestrel/database`).
+ * - `key` — the `KeyFunction` (`@orkestrel/database`) every minted database is constructed with,
+ *   used when a written row lacks its primary key. Defaults to `generateUUID`.
+ * - `limit` — the row cap `'records'` / `'remove'` — via {@link import('./helpers.js').clampCriteria}
+ *   — enforce when a call's `criteria.limit` is omitted or exceeds it. Defaults to
+ *   {@link import('./constants.js').DATABASE_TOOL_LIMIT}.
+ * - `timeout` — milliseconds; when set, every `@orkestrel/database` call this tool makes is given
+ *   a fresh `AbortSignal.timeout(timeout)` per tool call.
+ * - `readonly` — when `true`, every mutating operation (`'create'` / `'add'` / `'set'` /
+ *   `'update'` / `'remove'` / `'migrate'` / `'destroy'`) throws a typed `TOOL`
+ *   {@link import('./errors.js').AgentToolError} before doing anything.
+ * - `name` / `description` — advertised tool overrides; default to
+ *   {@link import('./constants.js').DATABASE_TOOL_NAME} / {@link import('./constants.js').DATABASE_TOOL_DESCRIPTION}.
+ */
+export interface DatabaseToolOptions {
+	readonly name?: string
+	readonly description?: string
+	readonly databases?: Readonly<Record<string, DatabaseInterface>>
+	readonly store?: DefinitionStoreInterface
+	readonly drivers?: Readonly<Record<string, () => DriverInterface>>
+	readonly key?: KeyFunction
+	readonly limit?: number
+	readonly timeout?: number
+	readonly readonly?: boolean
+}
+
+/**
+ * Options for {@link import('./factories.js').createRelationTool} — SRC-3 (the final unit) of
+ * the 3-unit database / relation spine.
+ *
+ * @remarks
+ * - `managers` — the live `RelationManagerInterface` (`@orkestrel/relation`) registry a call's
+ *   optional `manager` field addresses by name; REQUIRED (unlike the database tool's lazily
+ *   resolved handles, a relation manager's relations are declared up front and cannot be minted
+ *   on demand from a tool call). A call that omits `manager` resolves to the SOLE registered
+ *   manager when exactly one is registered, else throws a typed `TOOL`
+ *   {@link import('./errors.js').AgentToolError} naming the registered manager keys.
+ * - `limit` — the row cap `'find'` / `'links'` enforce when a call's `limit` is omitted or
+ *   exceeds it. Defaults to {@link import('./constants.js').RELATION_TOOL_LIMIT}.
+ * - `depth` — the max dot-path segment count `'load'` / `'find'`'s `include` paths may reach
+ *   ({@link import('./helpers.js').expandInclude}). Defaults to
+ *   {@link import('./constants.js').RELATION_TOOL_DEPTH}.
+ * - `name` / `description` — advertised tool overrides; default to
+ *   {@link import('./constants.js').RELATION_TOOL_NAME} / {@link import('./constants.js').RELATION_TOOL_DESCRIPTION}.
+ */
+export interface RelationToolOptions {
+	readonly name?: string
+	readonly description?: string
+	readonly managers: Readonly<Record<string, RelationManagerInterface>>
+	readonly limit?: number
+	readonly depth?: number
 }

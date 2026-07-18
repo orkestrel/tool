@@ -2,9 +2,12 @@ import {
 	arrayShape,
 	booleanShape,
 	integerShape,
+	jsonShape,
 	literalShape,
+	numberShape,
 	objectShape,
 	optionalShape,
+	recordShape,
 	stringShape,
 	unionShape,
 } from '@orkestrel/contract'
@@ -461,5 +464,303 @@ export const workspaceToolShape = unionShape(
 		id: stringShape({
 			description: 'The id of the workspace to make active (from the "workspaces" listing).',
 		}),
+	}),
+)
+
+// === Database tool shape (SRC-2 — the tool factory itself; SRC-1 landed the persistence + the
+// TableSpec DSL this shape's `tables` field compiles the SAME way `expandTables` does)
+
+/** A {@link import('./types.js').ColumnKind} literal — the leaf {@link columnSpecShape} wraps. */
+export const columnKindShape = literalShape(['string', 'integer', 'number', 'boolean'], {
+	description: 'A column type: "string" | "integer" | "number" | "boolean".',
+})
+
+/** A {@link import('./types.js').ColumnSpec} — a bare {@link columnKindShape}, or `{ type, optional }`. */
+export const columnSpecShape = unionShape(
+	columnKindShape,
+	objectShape({
+		type: columnKindShape,
+		optional: optionalShape(
+			booleanShape({ description: 'Whether the column may be absent from a row.' }),
+		),
+	}),
+)
+
+/** A {@link import('./types.js').TableSpec} — table name to `{ columns }`, each column a {@link columnSpecShape}. */
+export const tableSpecShape = recordShape(
+	objectShape({
+		columns: recordShape(columnSpecShape, { description: 'Column name to its type.' }),
+	}),
+	{ description: 'Table name to its column layout.' },
+)
+
+/** One key value — a string or number; the array form (multiple keys, positional) resolves FIRST per AGENTS §9.2. */
+export const keyShape = unionShape(
+	arrayShape(unionShape(stringShape(), numberShape()), {
+		description: 'Multiple row keys, positional — a miss at an index is undefined there.',
+	}),
+	stringShape({ description: 'One row key.' }),
+	numberShape({ description: 'One row key.' }),
+)
+
+/** A loose row — a flat object of column name to JSON value; the array form (multiple rows) resolves FIRST per AGENTS §9.2. */
+export const rowShape = recordShape(jsonShape(), {
+	description: 'A row as a flat object of column name to value.',
+})
+
+/** One or many loose rows — the array form resolves FIRST per AGENTS §9.2. */
+export const rowsShape = unionShape(
+	arrayShape(rowShape, { description: 'Multiple rows.' }),
+	rowShape,
+)
+
+/** One SERIALIZED WHERE condition — `values` is ALWAYS an array, even for a single-value operator. */
+export const conditionShape = objectShape({
+	column: stringShape({ description: 'The column this condition applies to.' }),
+	operator: literalShape(
+		[
+			'equals',
+			'not',
+			'above',
+			'below',
+			'from',
+			'to',
+			'between',
+			'like',
+			'glob',
+			'starts',
+			'ends',
+			'any',
+			'none',
+			'absent',
+			'present',
+		],
+		{ description: 'The comparison operator.' },
+	),
+	values: arrayShape(jsonShape(), {
+		description: 'The operand values the operator needs (always an array, even for one value).',
+	}),
+	connector: optionalShape(
+		literalShape(['and', 'or'], {
+			description: 'Joins this condition to the next; omit on the last condition.',
+		}),
+	),
+})
+
+/** One sort term. */
+export const orderShape = objectShape({
+	column: stringShape({ description: 'The column to sort by.' }),
+	direction: literalShape(['ascending', 'descending'], { description: 'The sort direction.' }),
+})
+
+/** The SERIALIZED criteria form — conditions, order, and pagination. */
+export const criteriaShape = objectShape({
+	conditions: optionalShape(
+		arrayShape(conditionShape, { description: 'The WHERE conditions, folded left to right.' }),
+	),
+	order: optionalShape(
+		arrayShape(orderShape, { description: 'The sort terms, applied in order.' }),
+	),
+	limit: optionalShape(integerShape({ min: 0, description: 'Max rows to return.' })),
+	offset: optionalShape(integerShape({ min: 0, description: 'Rows to skip before returning.' })),
+})
+
+/**
+ * The shape of {@link import('./factories.js').createDatabaseTool}'s call arguments —
+ * discriminated by `operation` into the 12 database operations (`'create'` / `'tables'` /
+ * `'get'` / `'records'` / `'count'` / `'aggregate'` / `'add'` / `'set'` / `'update'` /
+ * `'remove'` / `'migrate'` / `'destroy'`).
+ *
+ * @remarks
+ * Every arm carries `id` (the database id). `'create'` / `'migrate'` carry `tables` (the
+ * {@link import('./types.js').TableSpec} column DSL, compiled via
+ * {@link import('./helpers.js').expandTables}); `'get'` / `'update'` / `'remove'` carry `key`
+ * (one key or an array of keys, positional); `'add'` / `'set'` carry `row` (one row or an array of
+ * rows); `'update'` also carries `changes` (a loose partial row); `'records'` / `'count'` /
+ * `'aggregate'` carry an optional `criteria` (the SERIALIZED form — `values` is ALWAYS an array,
+ * even for a single-value operator, so a caller never chains method calls or guesses arity).
+ */
+export const databaseToolShape = unionShape(
+	objectShape({
+		operation: literalShape(['create'], { description: 'Define a new database.' }),
+		id: stringShape({ min: 1, description: 'The database id.' }),
+		tables: tableSpecShape,
+		driver: optionalShape(
+			stringShape({ min: 1, description: 'The registered driver key. Defaults to "memory".' }),
+		),
+		keys: optionalShape(
+			recordShape(stringShape(), { description: 'Table name to its primary-key column.' }),
+		),
+	}),
+	objectShape({
+		operation: literalShape(['tables'], { description: "List a database's table names." }),
+		id: stringShape({ min: 1, description: 'The database id.' }),
+	}),
+	objectShape({
+		operation: literalShape(['get'], { description: 'Fetch one or more rows by primary key.' }),
+		id: stringShape({ min: 1, description: 'The database id.' }),
+		table: stringShape({ min: 1, description: 'The table name.' }),
+		key: keyShape,
+	}),
+	objectShape({
+		operation: literalShape(['records'], { description: 'List rows matching criteria.' }),
+		id: stringShape({ min: 1, description: 'The database id.' }),
+		table: stringShape({ min: 1, description: 'The table name.' }),
+		criteria: optionalShape(criteriaShape),
+	}),
+	objectShape({
+		operation: literalShape(['count'], { description: 'Count rows matching criteria.' }),
+		id: stringShape({ min: 1, description: 'The database id.' }),
+		table: stringShape({ min: 1, description: 'The table name.' }),
+		criteria: optionalShape(criteriaShape),
+	}),
+	objectShape({
+		operation: literalShape(['aggregate'], { description: 'Compute an aggregate over a column.' }),
+		id: stringShape({ min: 1, description: 'The database id.' }),
+		table: stringShape({ min: 1, description: 'The table name.' }),
+		function: literalShape(['count', 'sum', 'average', 'minimum', 'maximum'], {
+			description: 'The aggregate function.',
+		}),
+		column: stringShape({ min: 1, description: 'The column to aggregate.' }),
+		criteria: optionalShape(criteriaShape),
+	}),
+	objectShape({
+		operation: literalShape(['add'], {
+			description: 'Insert one or more rows (fails on a duplicate key).',
+		}),
+		id: stringShape({ min: 1, description: 'The database id.' }),
+		table: stringShape({ min: 1, description: 'The table name.' }),
+		row: rowsShape,
+	}),
+	objectShape({
+		operation: literalShape(['set'], { description: 'Upsert one or more rows.' }),
+		id: stringShape({ min: 1, description: 'The database id.' }),
+		table: stringShape({ min: 1, description: 'The table name.' }),
+		row: rowsShape,
+	}),
+	objectShape({
+		operation: literalShape(['update'], { description: 'Patch one or more existing rows.' }),
+		id: stringShape({ min: 1, description: 'The database id.' }),
+		table: stringShape({ min: 1, description: 'The table name.' }),
+		key: keyShape,
+		changes: rowShape,
+	}),
+	objectShape({
+		operation: literalShape(['remove'], { description: 'Delete one or more rows by key.' }),
+		id: stringShape({ min: 1, description: 'The database id.' }),
+		table: stringShape({ min: 1, description: 'The table name.' }),
+		key: keyShape,
+	}),
+	objectShape({
+		operation: literalShape(['migrate'], { description: 'Replace the table layout in place.' }),
+		id: stringShape({ min: 1, description: 'The database id.' }),
+		tables: tableSpecShape,
+	}),
+	objectShape({
+		operation: literalShape(['destroy'], { description: 'Drop a database entirely.' }),
+		id: stringShape({ min: 1, description: 'The database id.' }),
+	}),
+)
+
+// === Relation tool shape (createRelationTool call args, SRC-3)
+//
+// Every arm carries an optional `manager` (which registered `RelationManagerInterface` to
+// address — omitted resolves to the sole registered manager) and a required `model` (the table
+// name on that manager). `include` is a flat array of dot-paths (mirrors `databaseToolShape`'s
+// flat-args ergonomic lever), expanded into a live `Include` by
+// {@link import('./helpers.js').expandInclude}.
+
+/** One key value — a string or number; the array form (multiple keys, positional) resolves FIRST per AGENTS §9.2. */
+export const relationKeyShape = unionShape(
+	arrayShape(unionShape(stringShape(), numberShape()), {
+		description: 'Multiple row keys, positional — a miss at an index is undefined there.',
+	}),
+	stringShape({ description: 'One row key.' }),
+	numberShape({ description: 'One row key.' }),
+)
+
+/** A single row key (not an array) — used by `'link'` / `'unlink'` / `'links'`, which address exactly one owning row. */
+export const singleKeyShape = unionShape(
+	stringShape({ description: 'The owning row key.' }),
+	numberShape({ description: 'The owning row key.' }),
+)
+
+/** Flat dot-path relation include list, expanded via {@link import('./helpers.js').expandInclude}. */
+export const includeShape = optionalShape(
+	arrayShape(
+		stringShape({
+			description: 'A dot-separated chain of relation names, e.g. "contacts.account".',
+		}),
+		{ description: 'Which relations to attach, as flat dot-paths.' },
+	),
+)
+
+/** Which registered relation manager to address — omitted resolves to the sole registered manager. */
+export const managerShape = optionalShape(
+	stringShape({ min: 1, description: 'Which registered relation manager to address.' }),
+)
+
+/**
+ * The shape of {@link import('./factories.js').createRelationTool}'s call arguments —
+ * discriminated by `operation` into the 5 relation operations (`'load'` / `'find'` / `'link'` /
+ * `'unlink'` / `'links'`).
+ *
+ * @remarks
+ * `'load'` fetches one or more rows (positional key/array) with `include` attached. `'find'`
+ * fetches rows (pagination / sort only) with `include` attached. `'link'` / `'unlink'` write /
+ * remove a `through` junction row; `'links'` lists a `through` relation's linked keys.
+ */
+export const relationToolShape = unionShape(
+	objectShape({
+		operation: literalShape(['load'], {
+			description: 'Fetch one or more rows by key, with related rows attached.',
+		}),
+		manager: managerShape,
+		model: stringShape({ min: 1, description: 'The model (table) name.' }),
+		key: relationKeyShape,
+		include: includeShape,
+	}),
+	objectShape({
+		operation: literalShape(['find'], {
+			description: 'List rows, with related rows attached.',
+		}),
+		manager: managerShape,
+		model: stringShape({ min: 1, description: 'The model (table) name.' }),
+		include: includeShape,
+		limit: optionalShape(integerShape({ min: 0, description: 'Max rows to return.' })),
+		offset: optionalShape(integerShape({ min: 0, description: 'Rows to skip before returning.' })),
+		sort: optionalShape(stringShape({ min: 1, description: 'The column to sort by.' })),
+		direction: optionalShape(
+			literalShape(['ascending', 'descending'], { description: 'The sort direction.' }),
+		),
+	}),
+	objectShape({
+		operation: literalShape(['link'], {
+			description: 'Connect two rows through a "through" relation.',
+		}),
+		manager: managerShape,
+		model: stringShape({ min: 1, description: 'The model (table) name.' }),
+		key: singleKeyShape,
+		relation: stringShape({ min: 1, description: 'The "through" relation name.' }),
+		target: singleKeyShape,
+	}),
+	objectShape({
+		operation: literalShape(['unlink'], {
+			description: 'Disconnect two rows previously linked through a "through" relation.',
+		}),
+		manager: managerShape,
+		model: stringShape({ min: 1, description: 'The model (table) name.' }),
+		key: singleKeyShape,
+		relation: stringShape({ min: 1, description: 'The "through" relation name.' }),
+		target: singleKeyShape,
+	}),
+	objectShape({
+		operation: literalShape(['links'], {
+			description: 'List every key linked to a row through a "through" relation.',
+		}),
+		manager: managerShape,
+		model: stringShape({ min: 1, description: 'The model (table) name.' }),
+		key: singleKeyShape,
+		relation: stringShape({ min: 1, description: 'The "through" relation name.' }),
 	}),
 )

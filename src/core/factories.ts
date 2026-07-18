@@ -15,13 +15,19 @@ import type {
 	AgentFunctionOptions,
 	AgentToolOptions,
 	AnswerToolOptions,
+	DatabaseDefinition,
+	DatabaseDefinitionRow,
+	DatabaseToolOptions,
+	DefinitionStoreInterface,
 	PromptToolOptions,
+	RelationToolOptions,
 	WorkflowDraft,
 	WorkflowSteps,
 	WorkflowToolOptions,
 	WorkspaceOperation,
 	WorkspaceToolOptions,
 } from './types.js'
+import type { DatabaseInterface, DriverInterface, TableInterface } from '@orkestrel/database'
 import {
 	createTool,
 	createWorkspaceManager,
@@ -29,9 +35,12 @@ import {
 	rangeOf,
 	WorkspaceError,
 } from '@orkestrel/agent'
-import { createContract, schemaToParameters } from '@orkestrel/contract'
+import { createContract, rawShape, schemaToParameters, stringShape } from '@orkestrel/contract'
 import { isTerminalError } from '@orkestrel/terminal'
+import { createDatabase, createMemoryDriver, generateUUID } from '@orkestrel/database'
 import { createWorkflowContract, WorkflowError } from '@orkestrel/workflow'
+import { MemoryDefinitionStore } from './stores/MemoryDefinitionStore.js'
+import { DatabaseDefinitionStore } from './stores/DatabaseDefinitionStore.js'
 import {
 	AGENT_TOOL_DEPTH,
 	AGENT_TOOL_DESCRIPTION,
@@ -40,6 +49,11 @@ import {
 	ANSWER_TOOL_DESCRIPTION,
 	ANSWER_TOOL_NAME,
 	ANSWER_TOOL_SUMMARY,
+	DATABASE_TOOL_DESCRIPTION,
+	DATABASE_TOOL_LIMIT,
+	DATABASE_TOOL_MUTATIONS,
+	DATABASE_TOOL_NAME,
+	DATABASE_TOOL_SUMMARY,
 	DESCRIBE_TOOL_DESCRIPTION,
 	DESCRIBE_TOOL_NAME,
 	DESCRIBE_TOOL_SUMMARY,
@@ -47,6 +61,11 @@ import {
 	PROMPT_TOOL_DESCRIPTION,
 	PROMPT_TOOL_NAME,
 	PROMPT_TOOL_SUMMARY,
+	RELATION_TOOL_DEPTH,
+	RELATION_TOOL_DESCRIPTION,
+	RELATION_TOOL_LIMIT,
+	RELATION_TOOL_NAME,
+	RELATION_TOOL_SUMMARY,
 	WORKFLOW_TOOL_DESCRIPTION,
 	WORKFLOW_TOOL_NAME,
 	WORKFLOW_TOOL_SUMMARY,
@@ -54,12 +73,24 @@ import {
 	WORKSPACE_TOOL_NAME,
 	WORKSPACE_TOOL_SUMMARY,
 } from './constants.js'
-import { AgentToolError } from './errors.js'
+import { AgentToolError, isAgentToolError } from './errors.js'
 import {
 	agentTag,
+	clampCriteria,
 	coerceAnswer,
 	completeDraft,
+	criteriaOf,
+	databaseToolCode,
+	expandInclude,
 	expandSteps,
+	expandTables,
+	keysOf,
+	relationManagerOf,
+	relationModelOf,
+	relationToolCode,
+	rowOf,
+	tableSchema,
+	tableSpecOf,
 	terminalToolCode,
 	workflowTag,
 	workflowToolSummary,
@@ -67,8 +98,10 @@ import {
 import {
 	agentToolShape,
 	answerToolShape,
+	databaseToolShape,
 	describeToolShape,
 	promptToolShape,
+	relationToolShape,
 	workflowDraftShape,
 	workflowStepsShape,
 	workspaceToolShape,
@@ -886,6 +919,483 @@ export function createAnswerTool(options: AnswerToolOptions): ToolInterface {
 				)
 			}
 			return { answered: call.id }
+		},
+	})
+}
+
+// === Database definition stores (SRC-1 — the tool factories land in a later unit)
+
+/**
+ * Create the in-memory {@link DefinitionStoreInterface} — a process-lifetime `Map` of database
+ * definitions, the DEFAULT store the upcoming database / relation tools will persist their
+ * `DatabaseDefinition` configs through.
+ *
+ * @returns A {@link DefinitionStoreInterface}
+ *
+ * @example
+ * ```ts
+ * import { createMemoryDefinitionStore } from '@src/core'
+ *
+ * const store = createMemoryDefinitionStore()
+ * ```
+ */
+export function createMemoryDefinitionStore(): DefinitionStoreInterface {
+	return new MemoryDefinitionStore()
+}
+
+/**
+ * Create a {@link DefinitionStoreInterface} backed by one table of the `@orkestrel/database`
+ * layer — the driver-pluggable twin of {@link createMemoryDefinitionStore}, storing each
+ * database's definition as one opaque JSON column.
+ *
+ * @param driver - The {@link DriverInterface} backing the table (default an in-memory driver)
+ * @returns A {@link DefinitionStoreInterface}
+ *
+ * @example
+ * ```ts
+ * import { createDatabaseDefinitionStore } from '@src/core'
+ *
+ * const store = createDatabaseDefinitionStore() // in-memory by default
+ * ```
+ */
+export function createDatabaseDefinitionStore(
+	driver: DriverInterface = createMemoryDriver(),
+): DefinitionStoreInterface {
+	// The definition is stored as ONE OPAQUE JSON column (`rawShape`), so the row infers FLAT —
+	// `{ id: string; definition: unknown }` = DatabaseDefinitionRow.
+	const columns = { id: stringShape(), definition: rawShape({}) }
+	const database = createDatabase({ driver, tables: { definitions: columns } })
+	const table: TableInterface<DatabaseDefinitionRow> = database.table('definitions')
+	return new DatabaseDefinitionStore(table)
+}
+
+// === Database tool (SRC-2 — createDatabaseTool itself)
+
+/**
+ * Build an LLM-callable database tool — create, query, and mutate `@orkestrel/database`
+ * databases through one `operation`-discriminated call (AGENTS §14, matching
+ * {@link createWorkspaceTool}'s single-tool-many-operations shape).
+ *
+ * @remarks
+ * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * {@link import('./shapers.js').databaseToolShape}, dispatches to the matching operation, and
+ * RETURNS a plain result on success. A database is resolved lazily and cached for the tool's
+ * lifetime — `'create'` mints one from `tables` ({@link import('./helpers.js').expandTables}) and
+ * a registered `driver` key ({@link import('./types.js').DatabaseToolOptions.drivers}, default
+ * `{ memory: () => createMemoryDriver() }`); any other operation addressing an uncached id falls
+ * back to {@link import('./types.js').DatabaseToolOptions.store} (an unknown id throws a typed
+ * `TOOL` {@link import('./errors.js').AgentToolError}). When a `store` is configured, `'create'`
+ * persists the new {@link import('./types.js').DatabaseDefinition} and `'destroy'` deletes it.
+ *
+ * `'migrate'` re-declares a LIVE handle's tables via `DatabaseInterface.import` (the SAME driver
+ * and storage, a NEW typed view) and calls its `migrate` against the OLD deployed schema —
+ * derived from the handle's OWN `export()` (via {@link import('./helpers.js').tableSchema}), so it
+ * works for any handle, config-tracked or caller-supplied via
+ * {@link import('./types.js').DatabaseToolOptions.databases}. `'records'` clamps its `criteria` to
+ * {@link import('./types.js').DatabaseToolOptions.limit} (default
+ * {@link import('./constants.js').DATABASE_TOOL_LIMIT}) via
+ * {@link import('./helpers.js').clampCriteria}, reporting `truncated` when storage held more rows
+ * than the cap. Every operation's `criteria` is normalized via
+ * {@link import('./helpers.js').criteriaOf} (defaults an omitted condition `connector` to `'and'`).
+ * When {@link import('./types.js').DatabaseToolOptions.readonly} is `true`, every mutating
+ * operation throws a typed `TOOL` `AgentToolError` before doing anything. When
+ * {@link import('./types.js').DatabaseToolOptions.timeout} is set, every `@orkestrel/database` call
+ * this tool makes is given a fresh `AbortSignal.timeout(timeout)`. A typed `@orkestrel/database`
+ * failure (`DatabaseError`) re-surfaces as a typed `DATABASE` `AgentToolError` carrying the
+ * original {@link import('@orkestrel/database').DatabaseErrorCode} in `context.code`
+ * ({@link import('./helpers.js').databaseToolCode}); an `AgentToolError` thrown by this tool's own
+ * guards passes through unwrapped.
+ *
+ * A lazily re-minted database over the DEFAULT in-memory driver yields an EMPTY database — only
+ * the {@link import('./types.js').DatabaseDefinition} schema persists in `store`, never rows;
+ * durable rows need a persistent driver factory registered in
+ * {@link import('./types.js').DatabaseToolOptions.drivers}. `'destroy'` closes whatever handle is
+ * cached for the id, including an embedder-supplied
+ * {@link import('./types.js').DatabaseToolOptions.databases} handle — the embedder relinquishes
+ * that handle's lifecycle to this tool for any id it wires in. This tool assumes the
+ * single-writer, non-reentrant model `@orkestrel/database` itself assumes — concurrent calls
+ * against one id are NOT serialized by this tool. `'get'` is uncapped by
+ * {@link import('./types.js').DatabaseToolOptions.limit} (bounded only by the caller's `key` array
+ * size), unlike `'records'` / `'find'` / `'links'`.
+ *
+ * @param options - The tool's configuration (see {@link import('./types.js').DatabaseToolOptions})
+ * @returns A `ToolInterface` (named {@link import('./constants.js').DATABASE_TOOL_NAME} by default)
+ *
+ * @example
+ * ```ts
+ * import { createDatabaseTool } from '@src/core'
+ *
+ * const tool = createDatabaseTool()
+ * await tool.execute({
+ * 	operation: 'create',
+ * 	id: 'shop',
+ * 	tables: { products: { columns: { name: 'string', price: 'number' } } },
+ * })
+ * ```
+ */
+export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInterface {
+	const contract = createContract(databaseToolShape)
+	const parameters = schemaToParameters(contract.schema)
+	const handles = new Map<string, DatabaseInterface>(Object.entries(options.databases ?? {}))
+	const definitions = new Map<string, DatabaseDefinition>()
+	const drivers = options.drivers ?? { memory: () => createMemoryDriver() }
+	const key = options.key ?? generateUUID
+	const cap = options.limit ?? DATABASE_TOOL_LIMIT
+	const store = options.store
+
+	async function resolve(id: string): Promise<DatabaseInterface> {
+		const cached = handles.get(id)
+		if (cached !== undefined) return cached
+		if (store !== undefined) {
+			const definition = await store.get(id)
+			if (definition !== undefined) {
+				const factory = drivers[definition.driver]
+				if (factory === undefined) {
+					throw new AgentToolError('TOOL', `unknown driver '${definition.driver}'`, {
+						id,
+						driver: definition.driver,
+					})
+				}
+				const handle = createDatabase({
+					driver: factory(),
+					tables: expandTables(definition.tables),
+					...(definition.keys === undefined ? {} : { keys: definition.keys }),
+					key,
+				})
+				handles.set(id, handle)
+				definitions.set(id, definition)
+				return handle
+			}
+		}
+		throw new AgentToolError('TOOL', `unknown database '${id}'`, { id })
+	}
+
+	return createTool({
+		name: options.name ?? DATABASE_TOOL_NAME,
+		description: options.description ?? DATABASE_TOOL_DESCRIPTION,
+		summary: DATABASE_TOOL_SUMMARY,
+		parameters,
+		execute: async (args) => {
+			const call = contract.parse(args)
+			if (call === undefined) {
+				throw new AgentToolError('TOOL', 'malformed database call', { args })
+			}
+			if (options.readonly === true && DATABASE_TOOL_MUTATIONS.has(call.operation)) {
+				throw new AgentToolError(
+					'TOOL',
+					`operation '${call.operation}' is disabled in readonly mode`,
+					{ operation: call.operation },
+				)
+			}
+			const read: Readonly<{ signal?: AbortSignal }> | undefined =
+				options.timeout === undefined ? undefined : { signal: AbortSignal.timeout(options.timeout) }
+			try {
+				switch (call.operation) {
+					case 'create': {
+						if (
+							handles.has(call.id) ||
+							(store !== undefined && (await store.get(call.id)) !== undefined)
+						) {
+							throw new AgentToolError('TOOL', `database '${call.id}' already exists`, {
+								id: call.id,
+							})
+						}
+						const name = call.driver ?? 'memory'
+						const factory = drivers[name]
+						if (factory === undefined) {
+							throw new AgentToolError('TOOL', `unknown driver '${name}'`, {
+								id: call.id,
+								driver: name,
+							})
+						}
+						const tables = tableSpecOf(call.tables)
+						const keys = keysOf(call.keys)
+						const handle = createDatabase({
+							driver: factory(),
+							tables: expandTables(tables),
+							...(keys === undefined ? {} : { keys }),
+							key,
+						})
+						handles.set(call.id, handle)
+						const definition: DatabaseDefinition = {
+							id: call.id,
+							driver: name,
+							tables,
+							...(keys === undefined ? {} : { keys }),
+						}
+						definitions.set(call.id, definition)
+						if (store !== undefined) await store.set(definition)
+						return { id: call.id, tables: Object.keys(tables) }
+					}
+					case 'tables': {
+						const handle = await resolve(call.id)
+						const tables = Object.keys(handle.export()).map((name) => {
+							const table = handle.table(name)
+							return { name, primary: table.primary, columns: table.contract.schema }
+						})
+						return { tables }
+					}
+					case 'get': {
+						const handle = await resolve(call.id)
+						const table = handle.table(call.table)
+						const many = Array.isArray(call.key)
+						const keys = Array.isArray(call.key) ? call.key : [call.key]
+						const rows = await table.get(keys)
+						return many ? { rows } : { row: rows[0] }
+					}
+					case 'records': {
+						const handle = await resolve(call.id)
+						const table = handle.table(call.table)
+						const { criteria: probe, limit } = clampCriteria(criteriaOf(call.criteria), cap)
+						const rows = await table.records(probe, read)
+						const truncated = rows.length > limit
+						const sliced = rows.slice(0, limit)
+						return { rows: sliced, count: sliced.length, truncated, limit }
+					}
+					case 'count': {
+						const handle = await resolve(call.id)
+						const table = handle.table(call.table)
+						const count = await table.count(criteriaOf(call.criteria), read)
+						return { count }
+					}
+					case 'aggregate': {
+						const handle = await resolve(call.id)
+						const table = handle.table(call.table)
+						const value = await table.aggregate(
+							call.function,
+							call.column,
+							criteriaOf(call.criteria),
+							read,
+						)
+						return { value }
+					}
+					case 'add': {
+						const handle = await resolve(call.id)
+						const table = handle.table(call.table)
+						const many = Array.isArray(call.row)
+						const rows = (Array.isArray(call.row) ? call.row : [call.row]).map(rowOf)
+						const keys = await table.add(rows, read)
+						return many ? { keys } : { key: keys[0] }
+					}
+					case 'set': {
+						const handle = await resolve(call.id)
+						const table = handle.table(call.table)
+						const many = Array.isArray(call.row)
+						const rows = (Array.isArray(call.row) ? call.row : [call.row]).map(rowOf)
+						const keys = await table.set(rows, read)
+						return many ? { keys } : { key: keys[0] }
+					}
+					case 'update': {
+						const handle = await resolve(call.id)
+						const table = handle.table(call.table)
+						const changes = rowOf(call.changes)
+						const many = Array.isArray(call.key)
+						const keys = Array.isArray(call.key) ? call.key : [call.key]
+						const updated = await table.update(keys, changes, read)
+						return many ? { updated } : { updated: updated[0] }
+					}
+					case 'remove': {
+						const handle = await resolve(call.id)
+						const table = handle.table(call.table)
+						const many = Array.isArray(call.key)
+						const keys = Array.isArray(call.key) ? call.key : [call.key]
+						const removed = await table.remove(keys, read)
+						return many ? { removed } : { removed: removed[0] }
+					}
+					case 'migrate': {
+						const handle = await resolve(call.id)
+						const previous = handle.export()
+						const deployed = Object.entries(previous).map(([name, table]) =>
+							tableSchema(name, table),
+						)
+						const tables = tableSpecOf(call.tables)
+						const keys: Record<string, string> = {}
+						for (const name of Object.keys(tables)) {
+							const existing = previous[name]
+							if (existing !== undefined) keys[name] = existing.key
+						}
+						const declared = expandTables(tables)
+						const migrated = handle.import(
+							declared,
+							Object.keys(keys).length > 0 ? keys : undefined,
+						)
+						const migration = await migrated.migrate(deployed, read)
+						handles.set(call.id, migrated)
+						const tracked = definitions.get(call.id)
+						if (tracked !== undefined) {
+							const updated: DatabaseDefinition = {
+								id: call.id,
+								driver: tracked.driver,
+								tables,
+								...(Object.keys(keys).length > 0 ? { keys } : {}),
+							}
+							definitions.set(call.id, updated)
+							if (store !== undefined) await store.set(updated)
+						}
+						return { migration }
+					}
+					case 'destroy': {
+						const cached = handles.get(call.id)
+						const persisted =
+							store !== undefined && cached === undefined
+								? (await store.get(call.id)) !== undefined
+								: false
+						if (cached !== undefined) {
+							await cached.close()
+							handles.delete(call.id)
+						}
+						definitions.delete(call.id)
+						if (store !== undefined) await store.delete(call.id)
+						return { id: call.id, destroyed: cached !== undefined || persisted }
+					}
+				}
+			} catch (error) {
+				if (isAgentToolError(error)) throw error
+				const code = databaseToolCode(error)
+				if (code === undefined) throw error
+				throw new AgentToolError(
+					'DATABASE',
+					error instanceof Error ? error.message : String(error),
+					{
+						code,
+						operation: call.operation,
+						id: call.id,
+						...('table' in call ? { table: call.table } : {}),
+					},
+				)
+			}
+		},
+	})
+}
+
+// === Relation tool (SRC-3 — createRelationTool, the final unit of the database / relation spine)
+
+/**
+ * Build an LLM-callable relation tool — traverse and edit `@orkestrel/relation` relationships
+ * through one `operation`-discriminated call (AGENTS §14, matching {@link createDatabaseTool}'s
+ * single-tool-many-operations shape).
+ *
+ * @remarks
+ * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * {@link import('./shapers.js').relationToolShape}, resolves the addressed
+ * {@link import('@orkestrel/relation').RelationManagerInterface} — an explicit `manager` field
+ * must match a key of {@link import('./types.js').RelationToolOptions.managers}, an OMITTED one
+ * resolves to the SOLE registered manager, either miss throwing a typed `TOOL`
+ * {@link import('./errors.js').AgentToolError}
+ * ({@link import('./helpers.js').relationManagerOf}) — then resolves `model` against it
+ * ({@link import('./helpers.js').relationModelOf}, same typed-`TOOL`-on-miss shape), and
+ * dispatches to the matched operation, RETURNING a plain result on success.
+ *
+ * `'load'` / `'find'` expand the call's FLAT dot-path `include` list into a live
+ * `@orkestrel/relation` `Include` tree via {@link import('./helpers.js').expandInclude}, capped
+ * at {@link import('./types.js').RelationToolOptions.depth} (default
+ * {@link import('./constants.js').RELATION_TOOL_DEPTH}) — a path exceeding the cap, or carrying an
+ * empty segment, throws a typed `TOOL` error. `'load'` dispatches on whether `key` is an array
+ * (positional many-key form, AGENTS §9.2) or a single key. `'find'` and `'links'` clamp their
+ * result to {@link import('./types.js').RelationToolOptions.limit} (default
+ * {@link import('./constants.js').RELATION_TOOL_LIMIT}) — `'find'` probes one row past the
+ * effective limit (mirroring {@link import('./helpers.js').clampCriteria}'s idiom) to report
+ * `truncated`; `'links'` (which has no upstream pagination) fetches the FULL linked-key list and
+ * slices/truncates it the same way. `'link'` / `'unlink'` write / remove one `through` junction
+ * row.
+ *
+ * A typed `@orkestrel/relation` failure (`RelationError`) re-surfaces as a typed `RELATION`
+ * `AgentToolError` carrying the original {@link import('@orkestrel/relation').RelationErrorCode}
+ * in `context.code`; a typed `@orkestrel/database` failure underneath it (`DatabaseError`)
+ * re-surfaces as a typed `DATABASE` `AgentToolError`, mirroring {@link createDatabaseTool}'s error
+ * mapping; an `AgentToolError` thrown by this tool's own guards (malformed args, an unknown
+ * manager/model) passes through unwrapped.
+ *
+ * @param options - The tool's configuration (see {@link import('./types.js').RelationToolOptions})
+ * @returns A `ToolInterface` (named {@link import('./constants.js').RELATION_TOOL_NAME} by default)
+ *
+ * @example
+ * ```ts
+ * import { createRelationTool } from '@src/core'
+ *
+ * const tool = createRelationTool({ managers: { shop: manager } })
+ * await tool.execute({ operation: 'load', model: 'accounts', key: 'acc1', include: ['contacts'] })
+ * ```
+ */
+export function createRelationTool(options: RelationToolOptions): ToolInterface {
+	const contract = createContract(relationToolShape)
+	const parameters = schemaToParameters(contract.schema)
+	const depth = options.depth ?? RELATION_TOOL_DEPTH
+	const cap = options.limit ?? RELATION_TOOL_LIMIT
+	return createTool({
+		name: options.name ?? RELATION_TOOL_NAME,
+		description: options.description ?? RELATION_TOOL_DESCRIPTION,
+		summary: RELATION_TOOL_SUMMARY,
+		parameters,
+		execute: async (args) => {
+			const call = contract.parse(args)
+			if (call === undefined) {
+				throw new AgentToolError('TOOL', 'malformed relation call', { args })
+			}
+			try {
+				const manager = relationManagerOf(options.managers, call.manager)
+				const model = relationModelOf(manager, call.model)
+				switch (call.operation) {
+					case 'load': {
+						const include = expandInclude(call.include, depth)
+						if (typeof call.key === 'string' || typeof call.key === 'number') {
+							const row = await model.load(call.key, include)
+							return { row }
+						}
+						const rows = await model.load(call.key, include)
+						return { rows }
+					}
+					case 'find': {
+						const include = expandInclude(call.include, depth)
+						const effective = Math.min(call.limit ?? cap, cap)
+						const rows = await model.find(include, {
+							limit: effective + 1,
+							...(call.offset === undefined ? {} : { offset: call.offset }),
+							...(call.sort === undefined ? {} : { sort: call.sort }),
+							...(call.direction === undefined ? {} : { direction: call.direction }),
+						})
+						const truncated = rows.length > effective
+						const sliced = rows.slice(0, effective)
+						return { rows: sliced, count: sliced.length, truncated, limit: effective }
+					}
+					case 'link': {
+						await model.link(call.key, call.relation, call.target)
+						return { linked: true }
+					}
+					case 'unlink': {
+						await model.unlink(call.key, call.relation, call.target)
+						return { unlinked: true }
+					}
+					case 'links': {
+						const keys = await model.links(call.key, call.relation)
+						const truncated = keys.length > cap
+						const sliced = keys.slice(0, cap)
+						return { keys: sliced, count: sliced.length, truncated, limit: cap }
+					}
+				}
+			} catch (error) {
+				if (isAgentToolError(error)) throw error
+				const relation = relationToolCode(error)
+				if (relation !== undefined) {
+					throw new AgentToolError(
+						'RELATION',
+						error instanceof Error ? error.message : String(error),
+						{
+							code: relation,
+							operation: call.operation,
+							model: call.model,
+							...('relation' in call ? { relation: call.relation } : {}),
+						},
+					)
+				}
+				const database = databaseToolCode(error)
+				if (database === undefined) throw error
+				throw new AgentToolError(
+					'DATABASE',
+					error instanceof Error ? error.message : String(error),
+					{ code: database, operation: call.operation },
+				)
+			}
 		},
 	})
 }

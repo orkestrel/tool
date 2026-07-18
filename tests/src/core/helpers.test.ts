@@ -1,3 +1,4 @@
+import type { Criteria, TableSchema } from '@orkestrel/database'
 import type { WorkflowDraft, WorkflowSteps } from '@src/core'
 import type {
 	TaskResult,
@@ -8,11 +9,27 @@ import type {
 import type { PromptType } from '@orkestrel/terminal'
 import {
 	agentTag,
+	AgentToolError,
+	clampCriteria,
 	coerceAnswer,
+	columnSchema,
 	completeDraft,
 	completePhaseDraft,
 	completeTaskDraft,
+	criteriaOf,
+	databaseToolCode,
+	expandInclude,
 	expandSteps,
+	expandTables,
+	isAgentToolError,
+	isColumnKind,
+	isColumnSpec,
+	isDatabaseDefinition,
+	keysOf,
+	relationToolCode,
+	rowOf,
+	tableSchema,
+	tableSpecOf,
 	terminalToolCode,
 	workflowTag,
 	workflowToolSummary,
@@ -25,6 +42,9 @@ import {
 	createWorkflow,
 	createWorkflowContract,
 } from '@orkestrel/workflow'
+import { DatabaseError } from '@orkestrel/database'
+import { RelationError } from '@orkestrel/relation'
+import { createContract, integerShape, objectShape, stringShape } from '@orkestrel/contract'
 import { describe, expect, it } from 'vitest'
 
 // tests/src/core/helpers.test.ts — mirrors src/core/helpers.ts. Pure, deterministic
@@ -353,5 +373,375 @@ describe('terminalToolCode — classify a caught error into an AgentToolErrorCod
 		expect(terminalToolCode(new Error('plain'))).toBeUndefined()
 		expect(terminalToolCode('nope')).toBeUndefined()
 		expect(terminalToolCode(undefined)).toBeUndefined()
+	})
+})
+
+describe('isColumnKind — narrow to a valid ColumnKind literal', () => {
+	it('accepts every ColumnKind', () => {
+		expect(isColumnKind('string')).toBe(true)
+		expect(isColumnKind('integer')).toBe(true)
+		expect(isColumnKind('number')).toBe(true)
+		expect(isColumnKind('boolean')).toBe(true)
+	})
+
+	it('rejects a non-ColumnKind string and a non-string value', () => {
+		expect(isColumnKind('text')).toBe(false)
+		expect(isColumnKind('')).toBe(false)
+		expect(isColumnKind(42)).toBe(false)
+		expect(isColumnKind(undefined)).toBe(false)
+		expect(isColumnKind(null)).toBe(false)
+		expect(isColumnKind({})).toBe(false)
+	})
+})
+
+describe('isColumnSpec — narrow to a bare ColumnKind or an { type, optional } object', () => {
+	it('accepts a bare ColumnKind shorthand', () => {
+		expect(isColumnSpec('string')).toBe(true)
+		expect(isColumnSpec('integer')).toBe(true)
+		expect(isColumnSpec('number')).toBe(true)
+		expect(isColumnSpec('boolean')).toBe(true)
+	})
+
+	it('accepts the object form with a valid type, with and without optional', () => {
+		expect(isColumnSpec({ type: 'string' })).toBe(true)
+		expect(isColumnSpec({ type: 'integer', optional: true })).toBe(true)
+		expect(isColumnSpec({ type: 'boolean', optional: false })).toBe(true)
+	})
+
+	it('rejects an invalid type, a wrong-typed optional, and junk values', () => {
+		expect(isColumnSpec({ type: 'text' })).toBe(false)
+		expect(isColumnSpec({ type: 'string', optional: 'yes' })).toBe(false)
+		expect(isColumnSpec({})).toBe(false)
+		expect(isColumnSpec(null)).toBe(false)
+		expect(isColumnSpec(42)).toBe(false)
+		expect(isColumnSpec('text')).toBe(false)
+		expect(isColumnSpec([])).toBe(false)
+	})
+})
+
+describe('expandTables — compile a TableSpec into a @orkestrel/database TablesShape', () => {
+	it('maps each ColumnKind to the matching primitive shaper (guards good/bad values)', () => {
+		const tables = expandTables({
+			widgets: {
+				columns: { name: 'string', count: 'integer', weight: 'number', active: 'boolean' },
+			},
+		})
+		const contract = createContract(objectShape(tables.widgets))
+		expect(contract.is({ name: 'w', count: 1, weight: 1.5, active: true })).toBe(true)
+		expect(contract.is({ name: 42, count: 1, weight: 1.5, active: true })).toBe(false)
+		expect(contract.is({ name: 'w', count: 1.5, weight: 1.5, active: true })).toBe(false)
+		expect(contract.is({ name: 'w', count: 1, weight: 'x', active: true })).toBe(false)
+		expect(contract.is({ name: 'w', count: 1, weight: 1.5, active: 'yes' })).toBe(false)
+	})
+
+	it('optional:true wraps so an absent column passes and a wrong-typed present column fails', () => {
+		const tables = expandTables({
+			widgets: { columns: { nickname: { type: 'string', optional: true } } },
+		})
+		const contract = createContract(objectShape(tables.widgets))
+		expect(contract.is({})).toBe(true)
+		expect(contract.is({ nickname: 'w' })).toBe(true)
+		expect(contract.is({ nickname: 42 })).toBe(false)
+	})
+
+	it('compiles multiple tables independently', () => {
+		const tables = expandTables({
+			a: { columns: { x: 'string' } },
+			b: { columns: { y: 'integer' } },
+		})
+		expect(Object.keys(tables).sort()).toEqual(['a', 'b'])
+		expect(createContract(objectShape(tables.a)).is({ x: 's' })).toBe(true)
+		expect(createContract(objectShape(tables.b)).is({ y: 1 })).toBe(true)
+	})
+})
+
+describe('isDatabaseDefinition — narrow an untrusted value to a DatabaseDefinition', () => {
+	const valid = {
+		id: 'db-1',
+		driver: 'memory',
+		tables: { widgets: { columns: { name: 'string', qty: { type: 'integer', optional: true } } } },
+		keys: { widgets: 'name' },
+	}
+
+	it('accepts a full valid definition, with and without keys', () => {
+		expect(isDatabaseDefinition(valid)).toBe(true)
+		const { keys: _keys, ...withoutKeys } = valid
+		expect(isDatabaseDefinition(withoutKeys)).toBe(true)
+	})
+
+	it('rejects a missing or empty id / driver', () => {
+		const { id: _id, ...withoutId } = valid
+		expect(isDatabaseDefinition(withoutId)).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, id: '' })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, driver: '' })).toBe(false)
+	})
+
+	it('rejects malformed tables / columns', () => {
+		expect(isDatabaseDefinition({ ...valid, tables: 'nope' })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, tables: { widgets: 'nope' } })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, tables: { widgets: { columns: 'nope' } } })).toBe(false)
+		expect(
+			isDatabaseDefinition({ ...valid, tables: { widgets: { columns: { name: 'text' } } } }),
+		).toBe(false)
+	})
+
+	it('rejects wrong-typed keys values', () => {
+		expect(isDatabaseDefinition({ ...valid, keys: 'nope' })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, keys: { widgets: 42 } })).toBe(false)
+	})
+
+	it('rejects non-objects', () => {
+		expect(isDatabaseDefinition(null)).toBe(false)
+		expect(isDatabaseDefinition(undefined)).toBe(false)
+		expect(isDatabaseDefinition('nope')).toBe(false)
+		expect(isDatabaseDefinition(42)).toBe(false)
+		expect(isDatabaseDefinition([])).toBe(false)
+	})
+})
+
+describe('databaseToolCode / relationToolCode — classify a caught error into its granular code', () => {
+	it('databaseToolCode maps a real DatabaseError to its code', () => {
+		expect(databaseToolCode(new DatabaseError('NOT_FOUND', 'missing row'))).toBe('NOT_FOUND')
+		expect(databaseToolCode(new DatabaseError('CONFLICT', 'dup'))).toBe('CONFLICT')
+	})
+
+	it('databaseToolCode returns undefined for a non-DatabaseError value', () => {
+		expect(databaseToolCode(new Error('plain'))).toBeUndefined()
+		expect(databaseToolCode(undefined)).toBeUndefined()
+		expect(databaseToolCode('nope')).toBeUndefined()
+	})
+
+	it('relationToolCode maps a real RelationError to its code', () => {
+		expect(relationToolCode(new RelationError('INVALID', 'bad include'))).toBe('INVALID')
+		expect(relationToolCode(new RelationError('UNKNOWN_RELATION', 'missing'))).toBe(
+			'UNKNOWN_RELATION',
+		)
+	})
+
+	it('relationToolCode returns undefined for a non-RelationError value', () => {
+		expect(relationToolCode(new Error('plain'))).toBeUndefined()
+		expect(relationToolCode(undefined)).toBeUndefined()
+		expect(relationToolCode('nope')).toBeUndefined()
+	})
+})
+
+describe('clampCriteria — clamp a records call to a row cap + build the probe criteria', () => {
+	it('an undefined criteria caps at the given cap with a probe of cap+1', () => {
+		const { criteria, limit } = clampCriteria(undefined, 100)
+		expect(limit).toBe(100)
+		expect(criteria.limit).toBe(101)
+	})
+
+	it('a requested limit below the cap is honored (probe = requested+1)', () => {
+		const { criteria, limit } = clampCriteria({ limit: 10 }, 100)
+		expect(limit).toBe(10)
+		expect(criteria.limit).toBe(11)
+	})
+
+	it('a requested limit above the cap is clamped down to the cap', () => {
+		const { criteria, limit } = clampCriteria({ limit: 500 }, 100)
+		expect(limit).toBe(100)
+		expect(criteria.limit).toBe(101)
+	})
+
+	it('a limit of 0 floors at 0 (probe requests exactly 1 row)', () => {
+		const { criteria, limit } = clampCriteria({ limit: 0 }, 100)
+		expect(limit).toBe(0)
+		expect(criteria.limit).toBe(1)
+	})
+
+	it('preserves conditions / order / offset unchanged', () => {
+		const input: Criteria = {
+			conditions: [{ column: 'x', operator: 'equals', values: [1], connector: 'and' }],
+			order: [{ column: 'x', direction: 'ascending' }],
+			offset: 5,
+			limit: 10,
+		}
+		const { criteria } = clampCriteria(input, 100)
+		expect(criteria.conditions).toEqual(input.conditions)
+		expect(criteria.order).toEqual(input.order)
+		expect(criteria.offset).toBe(5)
+	})
+})
+
+describe('criteriaOf — normalize parsed wire criteria into a live Criteria', () => {
+	it('returns undefined when the input is undefined', () => {
+		expect(criteriaOf(undefined)).toBeUndefined()
+	})
+
+	it('defaults an omitted condition connector to "and", preserving an explicit one', () => {
+		const result = criteriaOf({
+			conditions: [
+				{ column: 'a', operator: 'equals', values: [1] },
+				{ column: 'b', operator: 'equals', values: [2], connector: 'or' },
+			],
+		})
+		expect(result?.conditions).toEqual([
+			{ column: 'a', operator: 'equals', values: [1], connector: 'and' },
+			{ column: 'b', operator: 'equals', values: [2], connector: 'or' },
+		])
+	})
+
+	it('passes order / limit / offset through unchanged, omitting fields not supplied', () => {
+		const result = criteriaOf({
+			order: [{ column: 'a', direction: 'descending' }],
+			limit: 5,
+			offset: 2,
+		})
+		expect(result).toEqual({
+			order: [{ column: 'a', direction: 'descending' }],
+			limit: 5,
+			offset: 2,
+		})
+		expect('conditions' in (result ?? {})).toBe(false)
+	})
+
+	it('an empty criteria object yields an empty (no-key) result', () => {
+		expect(criteriaOf({})).toEqual({})
+	})
+})
+
+describe('tableSpecOf — re-narrow a parsed loose tables value back to a strict TableSpec', () => {
+	it('re-narrows valid table/column entries', () => {
+		const result = tableSpecOf({
+			widgets: { columns: { name: 'string', qty: { type: 'integer', optional: true } } },
+		})
+		expect(result).toEqual({
+			widgets: { columns: { name: 'string', qty: { type: 'integer', optional: true } } },
+		})
+	})
+
+	it('drops a malformed table entry (not a record, or missing/invalid columns)', () => {
+		expect(tableSpecOf({ widgets: 'nope' })).toEqual({})
+		expect(tableSpecOf({ widgets: { columns: 'nope' } })).toEqual({})
+	})
+
+	it('drops an individual column that fails isColumnSpec, keeping the rest of the table', () => {
+		const result = tableSpecOf({
+			widgets: { columns: { name: 'string', bad: 'text' } },
+		})
+		expect(result.widgets?.columns).toEqual({ name: 'string' })
+	})
+
+	it('an empty input yields an empty TableSpec', () => {
+		expect(tableSpecOf({})).toEqual({})
+	})
+})
+
+describe('keysOf — re-narrow a parsed loose keys value back to Record<string, string>', () => {
+	it('returns undefined when the input is undefined', () => {
+		expect(keysOf(undefined)).toBeUndefined()
+	})
+
+	it('re-narrows string-valued entries', () => {
+		expect(keysOf({ widgets: 'name', gadgets: 'id' })).toEqual({ widgets: 'name', gadgets: 'id' })
+	})
+
+	it('drops a non-string entry, keeping the rest', () => {
+		expect(keysOf({ widgets: 'name', bad: 42 })).toEqual({ widgets: 'name' })
+	})
+
+	it('an empty input yields an empty record', () => {
+		expect(keysOf({})).toEqual({})
+	})
+})
+
+describe('rowOf — coerce a parsed row/changes value to a plain mutable Record', () => {
+	it('shallow-copies the input into a plain mutable object', () => {
+		const input = { a: 1, b: 'x' }
+		const result = rowOf(input)
+		expect(result).toEqual(input)
+		expect(result).not.toBe(input)
+	})
+
+	it('an empty input yields an empty object', () => {
+		expect(rowOf({})).toEqual({})
+	})
+})
+
+describe('columnSchema — map a column name + ContractShape to a ColumnSchema', () => {
+	it('projects the expected shape for a non-optional column', () => {
+		expect(columnSchema('name', stringShape())).toEqual({
+			name: 'name',
+			type: 'text',
+			nullable: false,
+		})
+	})
+
+	it('projects the expected shape for an integer column', () => {
+		expect(columnSchema('qty', integerShape())).toEqual({
+			name: 'qty',
+			type: 'integer',
+			nullable: false,
+		})
+	})
+})
+
+describe('tableSchema — build a TableSchema from a table name + TableExport', () => {
+	it('projects name/primary/columns/indexes from a live table handle', () => {
+		const result: TableSchema = tableSchema('widgets', {
+			key: 'id',
+			columns: { id: stringShape(), qty: integerShape() },
+		})
+		expect(result).toEqual({
+			name: 'widgets',
+			primary: 'id',
+			columns: [
+				{ name: 'id', type: 'text', nullable: false },
+				{ name: 'qty', type: 'integer', nullable: false },
+			],
+			indexes: [],
+		})
+	})
+})
+
+describe('expandInclude — expand a flat dot-path include list into a nested Include tree', () => {
+	it('a single-segment path becomes a bare true leaf', () => {
+		expect(expandInclude(['contacts'], 3)).toEqual({ contacts: true })
+	})
+
+	it('a multi-segment path nests', () => {
+		expect(expandInclude(['contacts.account'], 3)).toEqual({ contacts: { account: true } })
+		expect(expandInclude(['a.b.c'], 3)).toEqual({ a: { b: { c: true } } })
+	})
+
+	it('sibling paths merge under a shared prefix', () => {
+		expect(expandInclude(['contacts.account', 'contacts.notes'], 3)).toEqual({
+			contacts: { account: true, notes: true },
+		})
+	})
+
+	it("a longer path SUBSUMES a shorter sibling's bare true, never overwriting the deeper chain", () => {
+		expect(expandInclude(['contacts', 'contacts.account'], 3)).toEqual({
+			contacts: { account: true },
+		})
+		expect(expandInclude(['contacts.account', 'contacts'], 3)).toEqual({
+			contacts: { account: true },
+		})
+	})
+
+	it('a path exceeding the depth cap throws a typed TOOL AgentToolError', () => {
+		expect(() => expandInclude(['a.b.c'], 2)).toThrow(AgentToolError)
+		let caught: unknown
+		try {
+			expandInclude(['a.b.c'], 2)
+		} catch (error) {
+			caught = error
+		}
+		expect(isAgentToolError(caught) ? caught.code : undefined).toBe('TOOL')
+	})
+
+	it('an empty segment (leading/trailing/doubled dot) throws a typed TOOL AgentToolError', () => {
+		expect(() => expandInclude(['.a'], 3)).toThrow(AgentToolError)
+		expect(() => expandInclude(['a..b'], 3)).toThrow(AgentToolError)
+		expect(() => expandInclude(['a.'], 3)).toThrow(AgentToolError)
+	})
+
+	it('an undefined paths list yields the empty Include', () => {
+		expect(expandInclude(undefined, 3)).toEqual({})
+	})
+
+	it('an empty array yields the empty Include', () => {
+		expect(expandInclude([], 3)).toEqual({})
 	})
 })

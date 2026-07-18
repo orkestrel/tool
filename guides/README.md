@@ -44,6 +44,20 @@ helpers), not anything sourced in this repo; it is kept here so a reader of
 the parity suite can see the primitives it is built from without leaving
 this guide set.
 
+[`src/database.md`](src/database.md) is a byte-identical mirror of the guide
+for `@orkestrel/database` — a runtime dependency, the typed database layer
+(`DatabaseInterface`, `DriverInterface`, `KeyFunction`, the `Criteria` /
+`Condition` query DSL) `createDatabaseTool` wraps. It documents **that
+package's** surface, not anything sourced in this repo; it is kept here so a
+reader of this package can see the primitives it is built from without
+leaving this guide set.
+
+[`src/relation.md`](src/relation.md) is a byte-identical mirror of the guide
+for `@orkestrel/relation` — a runtime dependency, the declarative ORM layer
+(`RelationManagerInterface`, `ModelInterface`, `Include`) `createRelationTool`
+wraps. It documents **that package's** surface, not anything sourced in this
+repo; it is kept here for the same reason.
+
 ## See also
 
 - [`AGENTS.md`](../AGENTS.md) — the rules; §22 documentation-as-contracts.

@@ -326,3 +326,130 @@ export const ANSWER_TOOL_DESCRIPTION = [
 	'Example — answer one:',
 	JSON.stringify({ operation: 'answer', id: 'abc123', value: true }),
 ].join('\n')
+
+/**
+ * The name the upcoming `createDatabaseTool` factory will advertise by default — the key a model
+ * calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ *
+ * @remarks
+ * SRC-1 of a 3-unit spine: this unit lands the persistence + schema foundation
+ * ({@link import('./types.js').DatabaseDefinition}, {@link import('./types.js').DefinitionStoreInterface},
+ * {@link import('./helpers.js').expandTables}); `createDatabaseTool` itself is built in a later unit.
+ */
+export const DATABASE_TOOL_NAME = 'database'
+
+/**
+ * The lean {@link import('@orkestrel/agent').ToolInterface.summary} the upcoming database tool
+ * will advertise in place of {@link DATABASE_TOOL_DESCRIPTION}.
+ */
+export const DATABASE_TOOL_SUMMARY =
+	"Create and query a database — one operation per call (create, tables, get, records, count, aggregate, add, set, update, remove, migrate, destroy), chosen by the 'operation' field. Call describe('database') for the full operation list, the criteria form, and the column DSL."
+
+/**
+ * The DESCRIPTION the upcoming database tool will advertise — a multi-line guide that teaches a
+ * small model the operation list, the SERIALIZED criteria form, and the {@link import('./types.js').TableSpec}
+ * column DSL.
+ *
+ * @remarks
+ * The criteria form is deliberately SERIALIZED (never fluent) — every condition is a flat object
+ * `{ column, operator, values, connector? }` where `values` is ALWAYS an array, even for a
+ * single-value operator (`{ column: 'age', operator: 'from', values: [18] }`), so a small model
+ * never has to chain method calls or guess whether a value is scalar or a list.
+ */
+export const DATABASE_TOOL_DESCRIPTION = [
+	'Create and query a database. Every call is ONE operation, chosen by the "operation" field.',
+	'',
+	'Operations (each takes the fields listed):',
+	'- create    { "operation": "create", "id": "<database id>", "tables": { "<table>": { "columns": { "<column>": "string" | "integer" | "number" | "boolean" | { "type": "string", "optional": true } } } } } — define a new database.',
+	'- tables    { "operation": "tables", "id": "<database id>" } — list a database\'s table names.',
+	'- get       { "operation": "get", "id": "<database id>", "table": "<table>", "key": "<row key>" } — fetch one row by its primary key.',
+	'- records   { "operation": "records", "id": "<database id>", "table": "<table>", "criteria"?: <Criteria> } — list rows matching criteria.',
+	'- count     { "operation": "count", "id": "<database id>", "table": "<table>", "criteria"?: <Criteria> } — count rows matching criteria.',
+	'- aggregate { "operation": "aggregate", "id": "<database id>", "table": "<table>", "column": "<column>", "function": "count" | "sum" | "average" | "minimum" | "maximum", "criteria"?: <Criteria> } — compute an aggregate.',
+	'- add       { "operation": "add", "id": "<database id>", "table": "<table>", "row": { ... } } — insert a row (fails on a duplicate key).',
+	'- set       { "operation": "set", "id": "<database id>", "table": "<table>", "row": { ... } } — upsert a row.',
+	'- update    { "operation": "update", "id": "<database id>", "table": "<table>", "key": "<row key>", "row": { ... } } — patch an existing row.',
+	'- remove    { "operation": "remove", "id": "<database id>", "table": "<table>", "key": "<row key>" } — delete a row by key.',
+	'- migrate   { "operation": "migrate", "id": "<database id>", "tables": { ... } } — replace the table layout in place.',
+	'- destroy   { "operation": "destroy", "id": "<database id>" } — drop a database entirely.',
+	'',
+	'Criteria form — SERIALIZED, never fluent. A condition is a flat object; "values" is ALWAYS an array, even for one value:',
+	'  { "conditions": [ { "column": "age", "operator": "from", "values": [18], "connector": "and" } ], "order"?: [...], "offset"?: 0, "limit"?: 100 }',
+	'  operators: equals, not, above, below, from, to, between, like, glob, starts, ends, any, none, absent, present.',
+	'  "connector" joins this condition to the next ("and" | "or"); omit on the last condition.',
+	'',
+	'Column DSL (used by "create"/"migrate" "tables"): a column is either a bare type string ("string" | "integer" | "number" | "boolean"), or { "type": "<type>", "optional": true } when the column may be absent from a row.',
+	'Example — create a database:',
+	JSON.stringify({
+		operation: 'create',
+		id: 'shop',
+		tables: {
+			products: {
+				columns: { name: 'string', price: 'number', notes: { type: 'string', optional: true } },
+			},
+		},
+	}),
+	'Example — query with criteria:',
+	JSON.stringify({
+		operation: 'records',
+		id: 'shop',
+		table: 'products',
+		criteria: { conditions: [{ column: 'price', operator: 'below', values: [50] }] },
+	}),
+].join('\n')
+
+/** The default cap on rows a `records` / `remove` call returns (or acts on) when the caller omits `criteria.limit` — the upcoming database tool's default row ceiling. */
+export const DATABASE_TOOL_LIMIT = 1000
+
+/** The database tool's mutating operations — disabled by `DatabaseToolOptions.readonly`. */
+export const DATABASE_TOOL_MUTATIONS = new Set([
+	'create',
+	'add',
+	'set',
+	'update',
+	'remove',
+	'migrate',
+	'destroy',
+])
+
+/**
+ * The name `createRelationTool` advertises by default — the key a model calls and the
+ * `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ */
+export const RELATION_TOOL_NAME = 'relation'
+
+/**
+ * The lean {@link import('@orkestrel/agent').ToolInterface.summary} the relation tool advertises
+ * in place of {@link RELATION_TOOL_DESCRIPTION}.
+ */
+export const RELATION_TOOL_SUMMARY =
+	"Traverse and edit relationships between database rows — one operation per call (load, find, link, unlink, links), chosen by the 'operation' field. Call describe('relation') for the include-path syntax."
+
+/**
+ * The DESCRIPTION the relation tool advertises — a multi-line guide that teaches a small model
+ * the operation list and the flat dot-path `include` syntax.
+ *
+ * @remarks
+ * An include path is a FLAT dot-separated string (`'contacts.account'`), never a nested object —
+ * the same small-model ergonomic lever the other tools in this package use for flat args.
+ */
+export const RELATION_TOOL_DESCRIPTION = [
+	'Traverse and edit relationships between database rows. Every call is ONE operation, chosen by the "operation" field. "manager" is optional (omit it when only one relation manager is registered).',
+	'',
+	'Operations (each takes the fields listed):',
+	'- load   { "operation": "load", "model": "<model>", "key": "<row key>", "include"?: ["<path>", ...] } — fetch one (or, with an array key, several) row(s) with related rows attached.',
+	'- find   { "operation": "find", "model": "<model>", "include"?: ["<path>", ...], "limit"?: <n>, "offset"?: <n>, "sort"?: "<column>", "direction"?: "ascending"|"descending" } — list rows, each with related rows attached.',
+	'- link   { "operation": "link", "model": "<model>", "key": "<row key>", "relation": "<relation>", "target": "<related row key>" } — connect two rows through a "through" relation.',
+	'- unlink { "operation": "unlink", "model": "<model>", "key": "<row key>", "relation": "<relation>", "target": "<related row key>" } — disconnect two rows.',
+	'- links  { "operation": "links", "model": "<model>", "key": "<row key>", "relation": "<relation>" } — list every key linked to a row through a "through" relation.',
+	'',
+	'"include" is a FLAT dot-path array (not nested objects) — each string names a chain of relations to attach, up to the configured depth cap. Example: "contacts.account" attaches each row\'s contacts, and each contact\'s account.',
+	'Example — load a row with two levels of relations:',
+	JSON.stringify({ operation: 'load', model: 'orders', key: '1', include: ['contacts.account'] }),
+].join('\n')
+
+/** The default cap on rows a `find` / `links` call returns when the caller omits `limit` — the relation tool's default row ceiling. */
+export const RELATION_TOOL_LIMIT = 1000
+
+/** The default cap on how many `include` path segments deep a `load` / `find` call may traverse — the relation tool's default include-depth ceiling. */
+export const RELATION_TOOL_DEPTH = 3

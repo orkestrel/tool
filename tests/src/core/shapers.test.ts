@@ -1,5 +1,7 @@
 import {
 	agentToolShape,
+	databaseToolShape,
+	relationToolShape,
 	workflowDraftShape,
 	workflowStepsShape,
 	workspaceToolShape,
@@ -247,5 +249,238 @@ describe('workspaceToolShape — the 13-op discriminated union', () => {
 			'toLine',
 		])
 		expect(isRecord(spliceProps) ? 'range' in spliceProps : true).toBe(false)
+	})
+})
+
+describe('databaseToolShape — the 12-op discriminated union', () => {
+	const contract = createContract(databaseToolShape)
+
+	const valid: ReadonlyArray<readonly [string, Readonly<Record<string, unknown>>]> = [
+		[
+			'create',
+			{
+				operation: 'create',
+				id: 'db1',
+				tables: {
+					users: { columns: { name: 'string', age: { type: 'integer', optional: true } } },
+				},
+			},
+		],
+		['tables', { operation: 'tables', id: 'db1' }],
+		['get', { operation: 'get', id: 'db1', table: 'users', key: '1' }],
+		[
+			'records',
+			{
+				operation: 'records',
+				id: 'db1',
+				table: 'users',
+				criteria: {
+					conditions: [{ column: 'age', operator: 'above', values: [18] }],
+					order: [{ column: 'age', direction: 'ascending' }],
+					limit: 10,
+					offset: 0,
+				},
+			},
+		],
+		['count', { operation: 'count', id: 'db1', table: 'users' }],
+		[
+			'aggregate',
+			{ operation: 'aggregate', id: 'db1', table: 'users', function: 'sum', column: 'age' },
+		],
+		['add', { operation: 'add', id: 'db1', table: 'users', row: { name: 'a' } }],
+		['set', { operation: 'set', id: 'db1', table: 'users', row: [{ name: 'a' }] }],
+		[
+			'update',
+			{ operation: 'update', id: 'db1', table: 'users', key: '1', changes: { name: 'b' } },
+		],
+		['remove', { operation: 'remove', id: 'db1', table: 'users', key: '1' }],
+		[
+			'migrate',
+			{
+				operation: 'migrate',
+				id: 'db1',
+				tables: { users: { columns: { name: 'string' } } },
+			},
+		],
+		['destroy', { operation: 'destroy', id: 'db1' }],
+	]
+
+	for (const [label, value] of valid) {
+		it(`is() accepts a valid '${label}' operation`, () => {
+			expect(contract.is(value)).toBe(true)
+		})
+		it(`parse() returns '${label}' unchanged`, () => {
+			expect(contract.parse(value)).toEqual(value)
+		})
+	}
+
+	it('is() accepts the SERIALIZED condition form ({ column, operator, values, connector })', () => {
+		expect(
+			contract.is({
+				operation: 'records',
+				id: 'db1',
+				table: 'users',
+				criteria: {
+					conditions: [{ column: 'age', operator: 'above', values: [18], connector: 'and' }],
+				},
+			}),
+		).toBe(true)
+	})
+
+	it('is() REJECTS the FLUENT condition form ({ column, from }) — a fluent-shaped condition is not a valid SERIALIZED condition', () => {
+		expect(
+			contract.is({
+				operation: 'records',
+				id: 'db1',
+				table: 'users',
+				criteria: { conditions: [{ column: 'age', from: 18 }] },
+			}),
+		).toBe(false)
+	})
+
+	it('is() rejects an operator outside the 15-literal union', () => {
+		expect(
+			contract.is({
+				operation: 'records',
+				id: 'db1',
+				table: 'users',
+				criteria: { conditions: [{ column: 'age', operator: 'contains', values: ['x'] }] },
+			}),
+		).toBe(false)
+	})
+
+	it('is() rejects a direction outside ascending/descending', () => {
+		expect(
+			contract.is({
+				operation: 'records',
+				id: 'db1',
+				table: 'users',
+				criteria: { order: [{ column: 'age', direction: 'up' }] },
+			}),
+		).toBe(false)
+	})
+
+	it('is() rejects an aggregate function outside the 5 literals', () => {
+		expect(
+			contract.is({
+				operation: 'aggregate',
+				id: 'db1',
+				table: 'users',
+				function: 'median',
+				column: 'age',
+			}),
+		).toBe(false)
+	})
+
+	it('is() accepts a bare-kind column and a { type, optional } column in a TableSpec', () => {
+		expect(
+			contract.is({
+				operation: 'create',
+				id: 'db1',
+				tables: {
+					users: { columns: { name: 'string', age: { type: 'integer', optional: true } } },
+				},
+			}),
+		).toBe(true)
+	})
+
+	it('is() rejects an unknown column kind string in a TableSpec', () => {
+		expect(
+			contract.is({
+				operation: 'create',
+				id: 'db1',
+				tables: { users: { columns: { name: 'text' } } },
+			}),
+		).toBe(false)
+	})
+
+	it('is() rejects a missing discriminant or an unknown operation', () => {
+		expect(contract.is({ id: 'db1', table: 'users' })).toBe(false)
+		expect(contract.is({ operation: 'drop', id: 'db1' })).toBe(false)
+	})
+
+	it('is() accepts a key as a string, a number, or an array of both', () => {
+		expect(contract.is({ operation: 'get', id: 'db1', table: 'users', key: '1' })).toBe(true)
+		expect(contract.is({ operation: 'get', id: 'db1', table: 'users', key: 1 })).toBe(true)
+		expect(contract.is({ operation: 'get', id: 'db1', table: 'users', key: ['1', 2] })).toBe(true)
+	})
+
+	it('generate() produces a value its own guard accepts (round-trip parity)', () => {
+		const generated = contract.generate()
+		expect(contract.is(generated)).toBe(true)
+		expect(contract.parse(generated)).toEqual(generated)
+	})
+})
+
+describe('relationToolShape — the 5-op discriminated union', () => {
+	const contract = createContract(relationToolShape)
+
+	const valid: ReadonlyArray<readonly [string, Readonly<Record<string, unknown>>]> = [
+		['load', { operation: 'load', model: 'users', key: '1' }],
+		[
+			'load with include',
+			{ operation: 'load', model: 'users', key: '1', include: ['contacts', 'contacts.account'] },
+		],
+		['find', { operation: 'find', model: 'users' }],
+		[
+			'find with options',
+			{
+				operation: 'find',
+				model: 'users',
+				include: ['contacts'],
+				limit: 10,
+				offset: 0,
+				sort: 'name',
+				direction: 'ascending',
+			},
+		],
+		['link', { operation: 'link', model: 'users', key: '1', relation: 'contacts', target: '2' }],
+		[
+			'unlink',
+			{ operation: 'unlink', model: 'users', key: '1', relation: 'contacts', target: '2' },
+		],
+		['links', { operation: 'links', model: 'users', key: '1', relation: 'contacts' }],
+	]
+
+	for (const [label, value] of valid) {
+		it(`is() accepts a valid '${label}' operation`, () => {
+			expect(contract.is(value)).toBe(true)
+		})
+		it(`parse() returns '${label}' unchanged`, () => {
+			expect(contract.parse(value)).toEqual(value)
+		})
+	}
+
+	it('is() accepts include as a flat string array', () => {
+		expect(
+			contract.is({ operation: 'load', model: 'users', key: '1', include: ['contacts.account'] }),
+		).toBe(true)
+	})
+
+	it('is() rejects a link/unlink missing key, relation, or target', () => {
+		expect(
+			contract.is({ operation: 'link', model: 'users', relation: 'contacts', target: '2' }),
+		).toBe(false)
+		expect(contract.is({ operation: 'link', model: 'users', key: '1', target: '2' })).toBe(false)
+		expect(contract.is({ operation: 'link', model: 'users', key: '1', relation: 'contacts' })).toBe(
+			false,
+		)
+		expect(
+			contract.is({ operation: 'unlink', model: 'users', relation: 'contacts', target: '2' }),
+		).toBe(false)
+		expect(contract.is({ operation: 'unlink', model: 'users', key: '1', target: '2' })).toBe(false)
+		expect(
+			contract.is({ operation: 'unlink', model: 'users', key: '1', relation: 'contacts' }),
+		).toBe(false)
+	})
+
+	it('is() rejects an unknown operation literal', () => {
+		expect(contract.is({ operation: 'delete', model: 'users', key: '1' })).toBe(false)
+	})
+
+	it('generate() produces a value its own guard accepts (round-trip parity)', () => {
+		const generated = contract.generate()
+		expect(contract.is(generated)).toBe(true)
+		expect(contract.parse(generated)).toEqual(generated)
 	})
 })
