@@ -6,8 +6,10 @@ import {
 	workflowStepsShape,
 	workspaceToolShape,
 } from '@src/core'
+import type { AgentToolArguments, WorkspaceOperation } from '@src/core'
 import { createContract, isRecord } from '@orkestrel/contract'
-import { describe, expect, it } from 'vitest'
+import type { Infer } from '@orkestrel/contract'
+import { describe, expect, expectTypeOf, it } from 'vitest'
 
 // tests/src/core/shapers.test.ts — mirrors src/core/shapers.ts. Each shape compiles
 // (`createContract`, `@orkestrel/contract`) into a lockstep guard/parser/schema/generator
@@ -16,6 +18,10 @@ import { describe, expect, it } from 'vitest'
 
 describe('agentToolShape — createAgentTool call args', () => {
 	const contract = createContract(agentToolShape)
+
+	it('Infer<typeof agentToolShape> stays structurally locked to the hand-written AgentToolArguments (types.ts) — a compile-time guard against silent two-copy drift (AGENTS §5)', () => {
+		expectTypeOf<Infer<typeof agentToolShape>>().toEqualTypeOf<AgentToolArguments>()
+	})
 
 	it('is() accepts a task-only call and a call with every optional field', () => {
 		expect(contract.is({ task: 'do the thing' })).toBe(true)
@@ -139,6 +145,10 @@ describe('workflowStepsShape — the advertised flat authoring surface', () => {
 
 describe('workspaceToolShape — the 13-op discriminated union', () => {
 	const contract = createContract(workspaceToolShape)
+
+	it('Infer<typeof workspaceToolShape> stays structurally locked to the hand-written WorkspaceOperation (types.ts) — a compile-time guard against silent two-copy drift (AGENTS §5)', () => {
+		expectTypeOf<Infer<typeof workspaceToolShape>>().toEqualTypeOf<WorkspaceOperation>()
+	})
 
 	const valid: ReadonlyArray<readonly [string, Readonly<Record<string, unknown>>]> = [
 		['read', { operation: 'read', path: 'a.ts' }],
