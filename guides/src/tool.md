@@ -259,7 +259,7 @@ These patterns follow the arc — author + run a workflow through the tool; pers
 ### Authoring + running a workflow through the tool, via a real `ToolManager`
 
 ```ts
-import { createWorkflowTool } from '@src/core'
+import { createWorkflowTool } from '@orkestrel/tool'
 import { createToolManager } from '@orkestrel/agent'
 import { createWorkflowRunner } from '@orkestrel/workflow'
 import type { WorkflowDefinition } from '@orkestrel/workflow'
@@ -283,7 +283,7 @@ result.value // { status: 'completed', count: 2 } — the single-level envelope;
 ### Plugging a `WorkflowStoreInterface` and retrieving the persisted snapshot
 
 ```ts
-import { createWorkflowTool } from '@src/core'
+import { createWorkflowTool } from '@orkestrel/tool'
 import {
 	createMemoryWorkflowStore,
 	createWorkflowRunner,
@@ -305,7 +305,7 @@ restored?.status // 'completed' — the persisted run, rebuilt from its own snap
 ### Driving the workspace tool with a plugged store
 
 ```ts
-import { createWorkspaceTool } from '@src/core'
+import { createWorkspaceTool } from '@orkestrel/tool'
 import { createMemoryWorkspaceStore } from '@orkestrel/agent'
 import { createToolManager } from '@orkestrel/agent'
 
@@ -331,7 +331,7 @@ read.value // 'hello'
 ### Delegating to a sub-agent through the agent tool
 
 ```ts
-import { createAgentTool } from '@src/core'
+import { createAgentTool } from '@orkestrel/tool'
 import { createAgentRegistry, createToolManager } from '@orkestrel/agent'
 
 declare const registry: ReturnType<typeof createAgentRegistry> // seeded with a `providers` pool
@@ -351,7 +351,7 @@ result.value // the sub-agent's settled `AgentResult.content`
 ### Persisting a delegation's conversation via the agent tool's own `store` slot
 
 ```ts
-import { createAgentTool } from '@src/core'
+import { createAgentTool } from '@orkestrel/tool'
 import {
 	createAgentRegistry,
 	createMemoryConversationStore,
@@ -378,7 +378,7 @@ await tools.execute({
 ### Lean advertisement + on-demand expansion via `createDescribeTool`
 
 ```ts
-import { createDescribeTool, createWorkflowTool, createWorkspaceTool } from '@src/core'
+import { createDescribeTool, createWorkflowTool, createWorkspaceTool } from '@orkestrel/tool'
 import { createToolManager } from '@orkestrel/agent'
 import { createWorkflowRunner } from '@orkestrel/workflow'
 import type { WorkflowDefinition } from '@orkestrel/workflow'
@@ -403,7 +403,7 @@ full.value // the workflow tool's FULL multi-line teaching description
 ### Composing `createToolFunction` / `createAgentFunction` into a workflow's `functions` registry
 
 ```ts
-import { createAgentFunction, createToolFunction } from '@src/core'
+import { createAgentFunction, createToolFunction } from '@orkestrel/tool'
 import { createToolManager } from '@orkestrel/agent'
 import { createWorkflowRunner } from '@orkestrel/workflow'
 import type { WorkflowDefinition } from '@orkestrel/workflow'
@@ -442,7 +442,7 @@ import {
 	expandSteps,
 	workflowTag,
 	workflowToolSummary,
-} from '@src/core'
+} from '@orkestrel/tool'
 
 workflowTag('release') // 'workflow:release'
 agentTag('reviewer') // 'agent:reviewer'
@@ -461,7 +461,7 @@ workflowToolSummary(result) // { status: result.status, count: result.results.le
 ### Recovering a typed `AgentToolError`
 
 ```ts
-import { AgentToolError, isAgentToolError } from '@src/core'
+import { AgentToolError, isAgentToolError } from '@orkestrel/tool'
 
 try {
 	throw new AgentToolError('TOOL', 'task is required')
@@ -473,7 +473,7 @@ try {
 ### Asking + answering through the terminal seam
 
 ```ts
-import { createAnswerTool, createPromptTool } from '@src/core'
+import { createAnswerTool, createPromptTool } from '@orkestrel/tool'
 import { createTerminalManager, createToolManager } from '@orkestrel/terminal'
 
 const manager = createTerminalManager()
@@ -512,7 +512,7 @@ result.value // true — the answer 'reviewer' just submitted
 ### The answer coercion + error classification helpers, standalone
 
 ```ts
-import { coerceAnswer, terminalToolCode } from '@src/core'
+import { coerceAnswer, terminalToolCode } from '@orkestrel/tool'
 import { TerminalError } from '@orkestrel/terminal'
 
 coerceAnswer('confirm', 'true') // true
@@ -527,7 +527,7 @@ terminalToolCode(new Error('not a terminal error')) // undefined
 ### Bridging a `TerminalManagerInterface` onto the wire
 
 ```ts
-import { createTerminalRoutes } from '@src/server'
+import { createTerminalRoutes } from '@orkestrel/tool/server'
 import { createTerminalManager } from '@orkestrel/terminal'
 
 const manager = createTerminalManager()
@@ -541,7 +541,7 @@ const routes = createTerminalRoutes(manager, { token: 'secret' })
 ### Driving the database tool: create, add a row, query with a serialized condition, migrate
 
 ```ts
-import { createDatabaseTool } from '@src/core'
+import { createDatabaseTool } from '@orkestrel/tool'
 import { createToolManager } from '@orkestrel/agent'
 
 const tool = createDatabaseTool() // in-memory `memory` driver, no store — created databases live for the tool's lifetime
@@ -606,7 +606,7 @@ import {
 	createDatabaseDefinitionStore,
 	createDatabaseTool,
 	createMemoryDefinitionStore,
-} from '@src/core'
+} from '@orkestrel/tool'
 import { createToolManager } from '@orkestrel/agent'
 
 const memory = createMemoryDefinitionStore() // in-memory Map-backed default
@@ -638,7 +638,7 @@ restored?.id // 'audit'
 ### Wiring the relation tool over a live `RelationManagerInterface` and loading nested includes
 
 ```ts
-import { createRelationTool } from '@src/core'
+import { createRelationTool } from '@orkestrel/tool'
 import { createToolManager } from '@orkestrel/agent'
 import type { RelationManagerInterface } from '@orkestrel/relation'
 
@@ -698,7 +698,7 @@ import {
 	relationModelOf,
 	relationToolCode,
 	tableSchema,
-} from '@src/core'
+} from '@orkestrel/tool'
 import { DatabaseError } from '@orkestrel/database'
 import { RelationError } from '@orkestrel/relation'
 
