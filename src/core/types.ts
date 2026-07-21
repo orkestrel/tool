@@ -548,13 +548,14 @@ export interface RelationToolOptions {
 //
 // `createInferTool` and `createEndpointTool` bridge an EXISTING API/DB surface into an
 // LLM-callable `ToolInterface`, built on `@orkestrel/contract`'s sample-based schema inference
-// (`samplesToSchema` / `schemaToObject` / `schemaToParameters`). `createInferTool` is a
-// STANDALONE utility tool a model calls directly to learn a JSON Schema from example values;
-// `createEndpointTool` wraps one CONCRETE endpoint (`EndpointDefinition`) — its `parameters` are
-// inferred ONCE at construction from `samples` and advertised to steer the model, but `execute`
-// PASSES THROUGH the model-supplied `args` to `invoke` WITHOUT re-validation (the contract
-// package has no JSON-Schema → runtime-parser direction — a capability boundary, not an
-// oversight; see the Contract invariant in `tool.md`).
+// (`samplesToSchema` / `schemaToObject` / `schemaToParameters`) and, since `@orkestrel/contract`
+// 0.0.7, its validating inverse `schemaToShape` (an inferred `JSONSchema` → a `ContractShape`).
+// `createInferTool` is a STANDALONE utility tool a model calls directly to learn a JSON Schema
+// from example values; `createEndpointTool` wraps one CONCRETE endpoint (`EndpointDefinition`) —
+// its `parameters` are inferred ONCE at construction from `samples` and advertised to steer the
+// model, and by DEFAULT `execute` ENFORCES that same advertised schema against the model-supplied
+// `args` before calling `invoke` (`EndpointToolOptions.validate`, default `true`) — see the
+// Contract invariant in `tool.md`.
 
 /**
  * Options for {@link import('./factories.js').createInferTool} — advertised name/description
@@ -586,13 +587,18 @@ export type EndpointHandler = (
  * @remarks
  * `samples` MUST be non-empty — {@link import('./factories.js').createEndpointTool} throws a
  * typed `TOOL` {@link import('./errors.js').AgentToolError} at CONSTRUCTION when it is empty,
- * since an empty sample set cannot infer a schema. `invoke` receives the model-supplied `args`
- * VERBATIM (passthrough, never re-validated against the inferred schema) and its return flows
- * back as the tool call's result; a throw PROPAGATES uncaught, isolated by the
- * `ToolManagerInterface` (`@orkestrel/agent`) into the canonical error envelope. When `samples`
- * are non-object values, the advertised schema wraps them under a single required `value`
- * property, so `invoke` receives an `args` record of the shape `{ value: ... }` — never the bare
- * value.
+ * since an empty sample set cannot infer a schema. By DEFAULT ({@link EndpointToolOptions.validate}
+ * `true`) `invoke` receives the PARSED, NORMALIZED args record — a copy of the model-supplied
+ * `args` with each scalar coerced to its inferred type (e.g. a number sent for a string slot
+ * arrives coerced to a string), checked against the same schema advertised as `parameters` — and
+ * a call with a missing required key or a non-coercible value never reaches `invoke` at all (see
+ * {@link EndpointToolOptions.validate}). With
+ * `validate: false`, `invoke` receives the model-supplied `args` VERBATIM (raw passthrough, never
+ * checked against the inferred schema). Either way `invoke`'s return flows back as the tool
+ * call's result; a throw PROPAGATES uncaught, isolated by the `ToolManagerInterface`
+ * (`@orkestrel/agent`) into the canonical error envelope. When `samples` are non-object values,
+ * the advertised schema wraps them under a single required `value` property, so `invoke` receives
+ * an `args` record of the shape `{ value: ... }` — never the bare value.
  */
 export interface EndpointDefinition {
 	readonly name: string
@@ -602,12 +608,34 @@ export interface EndpointDefinition {
 }
 
 /**
- * Construction-time schema-inference tuning for {@link import('./factories.js').createEndpointTool}
- * — whether the inferred `parameters` schema carries string `format` / `enum` constraints.
- * Defaults to `false` for both, matching `@orkestrel/contract`'s own `ValueToSchemaOptions`
- * defaults.
+ * Construction-time tuning for {@link import('./factories.js').createEndpointTool} — the
+ * inferred `parameters` schema's `format` / `enum` constraints, and whether that same schema is
+ * ENFORCED at `execute` time.
+ *
+ * @remarks
+ * `format` / `enum` default to `false`, matching `@orkestrel/contract`'s own
+ * `ValueToSchemaOptions` defaults. `validate` defaults to `true`: the schema
+ * `createEndpointTool` advertises as `parameters` (`samplesToSchema` + `schemaToObject`) is
+ * compiled ONCE at construction (via `@orkestrel/contract` 0.0.7's `schemaToShape`) into a
+ * `ContractInterface` used to `parse` every call's `args` before `invoke` runs — a NORMALIZING
+ * parse: a scalar value is COERCED to its inferred type where the house parsers coerce (a number
+ * to/from a numeric string, a boolean from `'1'`/`'0'`/`'true'`/`'false'`/`1`/`0`), so `invoke`
+ * receives the COERCED values (e.g. `7` sent for a string slot arrives at `invoke` as `'7'`), not
+ * the raw call args. A call whose `args` fails to parse — a required key missing, or a value not
+ * coercible to its slot's type — THROWS a typed `TOOL` {@link import('./errors.js').AgentToolError}
+ * carrying the structured `explain` faults, and `invoke` is never called. Beyond that coercion,
+ * enforcement is STRUCTURAL — required keys, `enum` membership, and numeric bounds — `format`
+ * annotations (`email`, `date-time`, `uuid`, `uri`, ...) are NEVER asserted, mirroring
+ * `@orkestrel/contract`'s own widening-only law for `schemaToShape`: a `format: true`-tuned
+ * endpoint still ACCEPTS a non-conforming string in a format-tagged slot. A key NOT present in
+ * the inferred (closed, `additionalProperties: false`) schema is NEVER a rejection either — it is
+ * SILENTLY DROPPED before `invoke` runs (the same leniency `@orkestrel/contract`'s own `parse`
+ * grants a closed object generally), so `invoke` may see fewer keys than the caller sent. Set
+ * `validate: false` to restore the PRE-0.0.7 behavior exactly — `execute` passes the
+ * model-supplied `args` straight to `invoke` UNCHANGED, unchecked and unstripped.
  */
 export interface EndpointToolOptions {
 	readonly format?: boolean
 	readonly enum?: boolean
+	readonly validate?: boolean
 }

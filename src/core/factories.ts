@@ -40,10 +40,12 @@ import {
 } from '@orkestrel/agent'
 import {
 	createContract,
+	isRecord,
 	rawShape,
 	samplesToSchema,
 	schemaToObject,
 	schemaToParameters,
+	schemaToShape,
 	stringShape,
 } from '@orkestrel/contract'
 import { isTerminalError } from '@orkestrel/terminal'
@@ -1481,17 +1483,28 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
  * `parameters` is inferred ONCE at construction from `definition.samples` via
  * `@orkestrel/contract`'s `samplesToSchema` (tuned by {@link import('./types.js').EndpointToolOptions}'s
  * `format` / `enum`), wrapping a non-object root as `{ value: <schema> }` via `schemaToObject` —
- * the ADVERTISED schema that steers the model. `execute` PASSES THROUGH the model-supplied `args`
- * to `definition.invoke` WITHOUT re-validation against that schema: `@orkestrel/contract` has no
- * JSON-Schema → runtime-parser direction, so re-validating an inferred (not hand-authored)
- * schema is a capability boundary, not an oversight (see the Contract invariant in `tool.md`).
+ * the SAME object-rooted schema is both the ADVERTISED `parameters` and, by default
+ * ({@link import('./types.js').EndpointToolOptions.validate} `true`), the ENFORCED contract:
+ * `@orkestrel/contract` 0.0.7's `schemaToShape` compiles it ONCE (via `createContract`) into a
+ * `ContractInterface` whose `.parse` runs on every call's `args` before `definition.invoke` — a
+ * NORMALIZING parse, not a strict type check: a scalar is COERCED to its inferred type where the
+ * house parsers coerce (a number to/from a numeric string, a boolean from `'1'`/`'0'`/`'true'`/
+ * `'false'`/`1`/`0`), so `definition.invoke` receives the COERCED value (e.g. `7` sent for a
+ * string slot arrives as `'7'`), not the raw call value. A call whose `args` fails to parse into
+ * a record — a required key missing, or a value not coercible to its slot's type — THROWS a
+ * typed `TOOL` {@link import('./errors.js').AgentToolError} carrying the compiled contract's
+ * structured `explain` faults, and `definition.invoke` is never called. `format` annotations are
+ * NEVER asserted, and a key outside the closed inferred schema is SILENTLY DROPPED rather than
+ * rejected (see {@link import('./types.js').EndpointToolOptions.validate}). With
+ * `validate: false`, `execute` PASSES THROUGH the model-supplied `args` to `definition.invoke`
+ * WITHOUT re-validation — the pre-0.0.7 behavior, preserved as an explicit opt-out. Either way,
  * `invoke`'s return flows back as the tool call's plain result; a throw PROPAGATES uncaught,
  * isolated by the `ToolManagerInterface` (`@orkestrel/agent`) into the canonical error envelope
  * (AGENTS §14) — never caught or re-wrapped here.
  *
  * @param definition - The endpoint's identity, non-empty samples, and local handler (see
  *   {@link import('./types.js').EndpointDefinition})
- * @param options - Construction-time inference tuning (see
+ * @param options - Construction-time inference tuning + the validate opt-out (see
  *   {@link import('./types.js').EndpointToolOptions})
  * @returns A `ToolInterface` named `definition.name`
  *
@@ -1509,8 +1522,22 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
  * const tools = createToolManager()
  * tools.add(tool)
  *
- * const result = await tools.execute({ id: 'call-1', name: 'lookupUser', arguments: { id: '1' } })
+ * // conforming args (all required keys present) parse and reach `invoke`
+ * const result = await tools.execute({
+ * 	id: 'call-1',
+ * 	name: 'lookupUser',
+ * 	arguments: { id: '1', name: 'Ada' },
+ * })
  * // result.value -> { id: '1', name: 'Ada' }
+ *
+ * // a nonconforming call (id is not coercible to the required string) is rejected before
+ * // `invoke` runs
+ * const rejected = await tools.execute({
+ * 	id: 'call-2',
+ * 	name: 'lookupUser',
+ * 	arguments: { id: true, name: 'Ada' },
+ * })
+ * // rejected.error -> the TOOL AgentToolError message
  * ```
  */
 export function createEndpointTool(
@@ -1522,15 +1549,36 @@ export function createEndpointTool(
 			name: definition.name,
 		})
 	}
-	const schema = samplesToSchema(definition.samples, {
-		format: options?.format ?? false,
-		enum: options?.enum ?? false,
-	})
-	const parameters = schemaToParameters(schemaToObject(schema))
+	const objectSchema = schemaToObject(
+		samplesToSchema(definition.samples, {
+			format: options?.format ?? false,
+			enum: options?.enum ?? false,
+		}),
+	)
+	const parameters = schemaToParameters(objectSchema)
+	const validate = options?.validate ?? true
+	if (!validate) {
+		return createTool({
+			name: definition.name,
+			description: definition.description,
+			parameters,
+			execute: (args) => definition.invoke(args),
+		})
+	}
+	const contract = createContract(schemaToShape(objectSchema))
 	return createTool({
 		name: definition.name,
 		description: definition.description,
 		parameters,
-		execute: (args) => definition.invoke(args),
+		execute: (args) => {
+			const parsed = contract.parse(args)
+			if (parsed === undefined || !isRecord(parsed)) {
+				throw new AgentToolError('TOOL', 'malformed endpoint call arguments', {
+					name: definition.name,
+					faults: contract.explain(args),
+				})
+			}
+			return definition.invoke(parsed)
+		},
 	})
 }

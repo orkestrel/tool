@@ -2549,20 +2549,61 @@ describe('createEndpointTool', () => {
 		})
 	})
 
-	it('PASSTHROUGH: invoke receives the model-supplied args EXACTLY, even when they diverge from the inferred schema', async () => {
+	it('validate: false PASSTHROUGH: invoke receives the model-supplied args EXACTLY (same reference), even when they diverge from the inferred schema', async () => {
 		let received: unknown
-		const tool = createEndpointTool({
-			name: 'echo',
-			description: 'Echoes call args.',
-			samples: [{ id: '1' }],
-			invoke: (args) => {
-				received = args
-				return null
+		const tool = createEndpointTool(
+			{
+				name: 'echo',
+				description: 'Echoes call args.',
+				samples: [{ id: '1' }],
+				invoke: (args) => {
+					received = args
+					return null
+				},
 			},
-		})
+			{ validate: false },
+		)
 		const args = { id: 'unrelated-shape', extra: { nested: true }, list: [1, 2, 3] }
 		await tool.execute(args)
-		expect(received).toEqual(args)
+		expect(received).toBe(args)
+	})
+
+	it('default validation COERCES a scalar to its inferred type before invoke runs', async () => {
+		let received: unknown
+		const tool = createEndpointTool({
+			name: 'lookupUser',
+			description: 'Look up a user by id.',
+			samples: [
+				{ id: '1', name: 'a' },
+				{ id: '2', name: 'b' },
+			],
+			invoke: (args) => {
+				received = args
+				return args
+			},
+		})
+		await tool.execute({ id: 7, name: 'x' })
+		expect(received).toEqual({ id: '7', name: 'x' })
+	})
+
+	it('a nonconforming call THROWS a typed TOOL AgentToolError carrying non-empty explain faults', async () => {
+		const tool = createEndpointTool({
+			name: 'lookupUser',
+			description: 'Look up a user by id.',
+			samples: [
+				{ id: '1', name: 'a' },
+				{ id: '2', name: 'b' },
+			],
+			invoke: (args) => args,
+		})
+		const error = await rejectionOf(
+			Promise.resolve().then(() => tool.execute({ id: true, name: 'Ada' })),
+		)
+		expect(isAgentToolError(error)).toBe(true)
+		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		const faults = isAgentToolError(error) ? error.context?.faults : undefined
+		expect(Array.isArray(faults)).toBe(true)
+		expect(Array.isArray(faults) ? faults.length : 0).toBeGreaterThan(0)
 	})
 
 	it('a sync invoke result flows back as the manager value', async () => {
@@ -2691,16 +2732,12 @@ describe('createEndpointTool', () => {
 		expect(tool.description).toBe('A custom endpoint.')
 	})
 
-	it('non-object root samples (bare strings) advertise a value-wrapped root; invoke still receives raw args', async () => {
-		let received: unknown
+	it('non-object root samples (bare strings) advertise a value-wrapped root', () => {
 		const tool = createEndpointTool({
 			name: 'text',
 			description: 'Bare string samples.',
 			samples: ['a', 'b', 'c'],
-			invoke: (args) => {
-				received = args
-				return 'ok'
-			},
+			invoke: (args) => args,
 		})
 		expect(tool.parameters).toEqual({
 			type: 'object',
@@ -2708,8 +2745,233 @@ describe('createEndpointTool', () => {
 			required: ['value'],
 			additionalProperties: false,
 		})
+	})
+
+	it('non-object root samples (bare strings), validate: false: invoke receives raw args unchecked', async () => {
+		let received: unknown
+		const tool = createEndpointTool(
+			{
+				name: 'text',
+				description: 'Bare string samples.',
+				samples: ['a', 'b', 'c'],
+				invoke: (args) => {
+					received = args
+					return 'ok'
+				},
+			},
+			{ validate: false },
+		)
 		const args = { value: 'hello', unrelated: true }
 		await tool.execute(args)
 		expect(received).toEqual(args)
+	})
+
+	// ── default validation (v1–v8) ──────────────────────────────────────────
+
+	it('(v1) conforming args parse and reach invoke as a record deep-equal to the sent args', async () => {
+		let received: unknown
+		const tool = createEndpointTool({
+			name: 'lookupUser',
+			description: 'Look up a user by id.',
+			samples: [
+				{ id: '1', name: 'Ada' },
+				{ id: '2', name: 'Bob' },
+			],
+			invoke: (args) => {
+				received = args
+				return args
+			},
+		})
+		const args = { id: '1', name: 'Ada' }
+		await tool.execute(args)
+		// Normalization yields a parsed COPY, not the same reference — assert deep-equal.
+		expect(received).toEqual(args)
+	})
+
+	it('(v2) nonconforming args (wrong property type) reject through the manager error envelope exactly once; construction never throws', async () => {
+		const tool = createEndpointTool({
+			name: 'lookupUser',
+			description: 'Look up a user by id.',
+			samples: [{ id: '1', name: 'Ada' }],
+			invoke: (args) => args,
+		})
+		const manager = createToolManager()
+		manager.add(tool)
+		const result = await manager.execute({
+			id: 'call-1',
+			name: 'lookupUser',
+			// A boolean does not coerce to a string (unlike a number, which `parseString` stringifies) —
+			// this is a genuine type mismatch, verified against the compiled contract directly.
+			arguments: { id: true, name: 'Ada' },
+		})
+		expect(result.value).toBeUndefined()
+		expect(result.error).toBeDefined()
+		expect(result.error?.split('malformed endpoint call arguments').length).toBe(2)
+	})
+
+	it('(v3) missing required key is rejected; an extra key against a closed inferred schema is silently DROPPED before invoke by default, passed through raw under validate: false', async () => {
+		// Verified against `@orkestrel/contract` 0.0.7 directly (`compileParser` / `compileReporter`
+		// docs): a closed object's extra keys never fault — `parse` silently drops them rather than
+		// rejecting the whole object. So the default-validation endpoint below still ACCEPTS a call
+		// with an extra key, but `invoke` receives the key stripped; only `validate: false` passes it
+		// through raw.
+		const definition = {
+			name: 'lookupUser',
+			description: 'Look up a user by id.',
+			samples: [{ id: '1', name: 'Ada' }],
+			invoke: (args: Readonly<Record<string, unknown>>) => args,
+		}
+		const strict = createEndpointTool(definition)
+		let caught: unknown
+		try {
+			await strict.execute({ id: '1' })
+		} catch (error) {
+			caught = error
+		}
+		expect(isAgentToolError(caught)).toBe(true)
+		expect(isAgentToolError(caught) ? caught.code : undefined).toBe('TOOL')
+
+		let strictReceived: unknown
+		const strictWithRecorder = createEndpointTool({
+			...definition,
+			invoke: (args) => {
+				strictReceived = args
+				return args
+			},
+		})
+		await strictWithRecorder.execute({ id: '1', name: 'Ada', extra: true })
+		expect(strictReceived).toEqual({ id: '1', name: 'Ada' })
+
+		let received: unknown
+		const lenient = createEndpointTool(
+			{
+				...definition,
+				invoke: (args) => {
+					received = args
+					return args
+				},
+			},
+			{ validate: false },
+		)
+		await lenient.execute({ id: '1', name: 'Ada', extra: true })
+		expect(received).toEqual({ id: '1', name: 'Ada', extra: true })
+	})
+
+	it('(v4) enum enforcement: an { enum: true } endpoint over repeated literal samples rejects an out-of-enum value and accepts an in-enum one', async () => {
+		const samples = [{ status: 'open' }, { status: 'open' }, { status: 'closed' }]
+		let received: unknown
+		const tool = createEndpointTool(
+			{
+				name: 'status',
+				description: 'Status endpoint.',
+				samples,
+				invoke: (args) => {
+					received = args
+					return args
+				},
+			},
+			{ enum: true },
+		)
+		await tool.execute({ status: 'closed' })
+		expect(received).toEqual({ status: 'closed' })
+		let caught: unknown
+		try {
+			await tool.execute({ status: 'pending' })
+		} catch (error) {
+			caught = error
+		}
+		expect(isAgentToolError(caught)).toBe(true)
+	})
+
+	it('(v5) format is NOT enforced: a { format: true } endpoint over email-shaped samples still accepts a non-email string', async () => {
+		let received: unknown
+		const tool = createEndpointTool(
+			{
+				name: 'notify',
+				description: 'Notify by email.',
+				samples: [{ email: 'ada@example.com' }, { email: 'bob@example.com' }],
+				invoke: (args) => {
+					received = args
+					return args
+				},
+			},
+			{ format: true },
+		)
+		await tool.execute({ email: 'not-an-email' })
+		expect(received).toEqual({ email: 'not-an-email' })
+	})
+
+	it('(v6) value-wrap enforcement: bare-string samples under default validation accept { value: string } and reject { value: boolean }', async () => {
+		let received: unknown
+		const tool = createEndpointTool({
+			name: 'text',
+			description: 'Bare string samples.',
+			samples: ['a', 'b', 'c'],
+			invoke: (args) => {
+				received = args
+				return args
+			},
+		})
+		await tool.execute({ value: 'hello' })
+		expect(received).toEqual({ value: 'hello' })
+		let caught: unknown
+		try {
+			// A boolean does not coerce to a string (unlike a number) — a genuine type mismatch.
+			await tool.execute({ value: true })
+		} catch (error) {
+			caught = error
+		}
+		expect(isAgentToolError(caught)).toBe(true)
+	})
+
+	it("(v7) hostile args: a __proto__-carrying JSON.parse'd object flows through parse without polluting, and a throwing-getter Proxy yields the canonical TOOL error, never an unhandled throw", async () => {
+		const tool = createEndpointTool({
+			name: 'lookupUser',
+			description: 'Look up a user by id.',
+			samples: [{ id: '1', name: 'Ada' }],
+			invoke: (args) => args,
+		})
+		const hostile = JSON.parse('{"id":"1","name":"Ada","__proto__":{"polluted":true}}') as Record<
+			string,
+			unknown
+		>
+		const result = await tool.execute(hostile)
+		expect(isRecord(result) ? result.polluted : undefined).toBeUndefined()
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+
+		const proxy = new Proxy(
+			{ id: '1', name: 'Ada' },
+			{
+				get() {
+					throw new Error('hostile getter')
+				},
+			},
+		)
+		const manager = createToolManager()
+		manager.add(tool)
+		const proxyResult = await manager.execute({
+			id: 'call-1',
+			name: 'lookupUser',
+			arguments: proxy,
+		})
+		expect(proxyResult.value).toBeUndefined()
+		expect(proxyResult.error).toBeDefined()
+	})
+
+	it('(v8) construction compiles the contract once — many executes with identical args stay fast and behave identically', async () => {
+		const samples = Array.from({ length: 50 }, (_, i) => ({ id: String(i), name: `user-${i}` }))
+		const tool = createEndpointTool({
+			name: 'lookupUser',
+			description: 'Look up a user by id.',
+			samples,
+			invoke: (args) => args,
+		})
+		const args = { id: '1', name: 'Ada' }
+		const start = performance.now()
+		for (let i = 0; i < 200; i++) {
+			await tool.execute(args)
+		}
+		const elapsed = performance.now() - start
+		expect(elapsed).toBeLessThan(1000)
 	})
 })
