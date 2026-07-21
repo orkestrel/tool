@@ -33,7 +33,7 @@ npm install @orkestrel/tool
 
 ## Requirements
 
-- Node.js >= 24
+- Node.js >= 22
 - Dual ESM + CommonJS builds (`import` and `require` both supported)
 
 ## Guide

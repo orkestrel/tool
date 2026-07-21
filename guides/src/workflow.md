@@ -21,8 +21,8 @@ Source: [`src/core`](../../src/core). Surfaced through the `@src/core` barrel.
 The 80% use case is two steps: author a `WorkflowDefinition` (pure JSON — phases in order, each phase's tasks concurrent, each task naming a registered behavior), then run it through a `WorkflowRunner` that builds the live tree and drives it to a `WorkflowResult`:
 
 ```ts
-import { createWorkflowRunner } from '@src/core'
-import type { WorkflowDefinition } from '@src/core'
+import { createWorkflowRunner } from '@orkestrel/workflow'
+import type { WorkflowDefinition } from '@orkestrel/workflow'
 
 const definition: WorkflowDefinition = {
 	id: 'release',
@@ -503,7 +503,7 @@ These patterns follow the layered arc — author, validate, and run a definition
 ### Authoring a definition (pure JSON)
 
 ```ts
-import type { WorkflowDefinition } from '@src/core'
+import type { WorkflowDefinition } from '@orkestrel/workflow'
 
 // Behavior is referenced BY NAME — never an inline function. A UI builds this, an LLM emits
 // it, persistence stores it; it round-trips through createWorkflowContract.
@@ -535,7 +535,7 @@ const definition: WorkflowDefinition = {
 ### Validating + seeding with the contract
 
 ```ts
-import { createWorkflowContract } from '@src/core'
+import { createWorkflowContract } from '@orkestrel/workflow'
 
 const contract = createWorkflowContract()
 contract.is(definition) // true — a total guard (malformed input ⇒ false, never throws)
@@ -547,7 +547,7 @@ contract.schema // the emitted JSON Schema for the full definition
 ### Running a workflow
 
 ```ts
-import { createWorkflowRunner } from '@src/core'
+import { createWorkflowRunner } from '@orkestrel/workflow'
 
 const runner = createWorkflowRunner() // a PURE engine — no registries of its own
 
@@ -638,7 +638,7 @@ See the `@orkestrel/tool` package's guide for authoring a definition through an 
 ### Driving the live entity tree directly
 
 ```ts
-import { createWorkflow, isWorkflowError } from '@src/core'
+import { createWorkflow, isWorkflowError } from '@orkestrel/workflow'
 
 const workflow = createWorkflow(definition)
 const task = workflow.phase('fetch')?.task('a')
@@ -658,7 +658,7 @@ The cascade is reactive: a leaf transition recomputes its phase, which escalates
 ### Forcing a terminal status — `skip` / `stop`
 
 ```ts
-import { createWorkflow } from '@src/core'
+import { createWorkflow } from '@orkestrel/workflow'
 
 const workflow = createWorkflow(definition)
 const phase = workflow.phase('optional-step')
@@ -681,7 +681,7 @@ A `skip` / `stop` at the phase / workflow tier is an OVERRIDE — it forces the 
 `pause` / `resume` / `wait` are RUNTIME-ONLY at both the workflow and phase tiers — never a `LifecycleStatus`, never persisted. `destroy` is the workflow's TERMINAL teardown (a `Phase` has no `destroy` — only the workflow owns the cascade):
 
 ```ts
-import { createWorkflow } from '@src/core'
+import { createWorkflow } from '@orkestrel/workflow'
 
 const workflow = createWorkflow(definition)
 
@@ -711,8 +711,8 @@ A driving `WorkflowRunnerInterface.execute(workflow)` gates a `pause` at the nex
 `Workflow.add` / `remove` / `move` / `update` mutate the workflow's PENDING SUFFIX of phases; `Phase.add` / `remove` / `move` / `update` mutate a phase's tasks (a `running` phase accepts only a pure `add` append); both return a `Result` rather than throwing, and both fire their event on success only:
 
 ```ts
-import { createWorkflow } from '@src/core'
-import type { PhaseDefinition, TaskDefinition } from '@src/core'
+import { createWorkflow } from '@orkestrel/workflow'
+import type { PhaseDefinition, TaskDefinition } from '@orkestrel/workflow'
 
 const workflow = createWorkflow({ id: 'wf', name: 'Wf', phases: [] })
 
@@ -749,7 +749,7 @@ Every one of these is refused gracefully (a `MUTATION` `Result` failure, never a
 `createWorkflow` builds every phase/task from the definition via `PhaseManagerInterface.append` / `TaskManagerInterface.append` internally — the same methods are available directly on an already-built tree's managers, e.g. to graft a live phase (or task) built elsewhere onto it:
 
 ```ts
-import { createWorkflow } from '@src/core'
+import { createWorkflow } from '@orkestrel/workflow'
 
 const main = createWorkflow({ id: 'wf', name: 'Wf', phases: [{ id: 'p1', name: 'P1', tasks: [] }] })
 const extra = createWorkflow({
@@ -781,7 +781,7 @@ target?.tasks.count // 1
 Each live `Workflow` / `Phase` / `Task` exposes a typed `emitter` (AGENTS §13) carrying its lifecycle for fire-and-forget observers — logging, metrics, progress UI. Subscribe via `entity.emitter.on(...)`, or wire initial listeners through the reserved `on` option (per-node, keyed by id under `WorkflowOptions.phases[id]` / `.tasks[id]`). Emitting is observation-only — every event fires strictly AFTER the relevant transition, so a listener can never change what a transition does:
 
 ```ts
-import { createWorkflow } from '@src/core'
+import { createWorkflow } from '@orkestrel/workflow'
 
 const workflow = createWorkflow(definition, { on: { complete: () => log('workflow done') } })
 workflow.emitter.on('fail', (result) => log.warn('workflow failed under bail', result)) // the failing TaskResult
@@ -804,7 +804,7 @@ A `start` fires when a node begins (enters `running`); `complete` when it settle
 ### Snapshot & restore (the durable payload)
 
 ```ts
-import { createWorkflow, restoreWorkflow } from '@src/core'
+import { createWorkflow, restoreWorkflow } from '@orkestrel/workflow'
 
 const functions = { fetch: async (controller) => `fetched ${controller.task.id}` }
 const workflow = createWorkflow(definition, { functions }) // a live tree, every node pending
@@ -834,7 +834,7 @@ import {
 	createMemoryWorkflowStore,
 	createWorkflow,
 	restoreWorkflow,
-} from '@src/core'
+} from '@orkestrel/workflow'
 import { createMemoryDriver } from '@orkestrel/database'
 
 // The zero-plumbing default (a plain Map) — or the driver-pluggable twin (one opaque JSON column):
@@ -856,7 +856,7 @@ The store has NO TTL / eviction — a persisted workflow run-state is durable un
 `WorkflowManager` (`createWorkflowManager`) is the additive manager tier over the section above — a store-backed REGISTRY of live workflows, mirroring the `@orkestrel/agent` line's `ConversationManager` / `WorkspaceManager`. It is PURELY ADDITIVE: direct `WorkflowStoreInterface` use and `restoreWorkflow` (both sections above) remain valid — a caller now has a THIRD, higher-level option that also tracks a `functions` registry so a hydrated workflow stays RUNNABLE.
 
 ```ts
-import { createMemoryWorkflowStore, createWorkflowManager } from '@src/core'
+import { createMemoryWorkflowStore, createWorkflowManager } from '@orkestrel/workflow'
 
 const store = createMemoryWorkflowStore() // or createDatabaseWorkflowStore(driver)
 const functions = { compile: async (controller) => `built ${controller.task.id}` }
@@ -900,7 +900,7 @@ import {
 	parkSignal,
 	phaseDefinitionToSnapshot,
 	taskDefinitionToSnapshot,
-} from '@src/core'
+} from '@orkestrel/workflow'
 
 // Status predicates + derivations — pure, order-insensitive reductions (never throw).
 isTerminalStatus('completed') // true
@@ -944,7 +944,7 @@ Every one is pure and side-effect-free: the guards/predicates never throw (`asse
 The dominant use of the scheduler: a long-running loop that periodically hands the host control so it stays responsive, checking an abort signal each pass.
 
 ```ts
-import { createScheduler } from '@src/core'
+import { createScheduler } from '@orkestrel/workflow'
 import { createAbort } from '@orkestrel/abort'
 
 const abort = createAbort()
@@ -964,7 +964,7 @@ async function pump(): Promise<void> {
 `delay(ms)` waits at least `ms`; pair it with an exponential interval for a retry backoff, and pass a `signal` to bail early.
 
 ```ts
-import { createScheduler } from '@src/core'
+import { createScheduler } from '@orkestrel/workflow'
 
 const scheduler = createScheduler()
 
@@ -981,9 +981,9 @@ async function withBackoff(attempt: () => Promise<boolean>, signal?: AbortSignal
 Every scheduler is the same `SchedulerInterface`, so consumers type against the interface and never name a concrete class. Pick the host-native backend once at the composition root; the loop is identical regardless of which `yield` primitive runs underneath.
 
 ```ts
-import type { SchedulerInterface } from '@src/core'
-import { createNodeScheduler } from '@src/server' // setImmediate yield
-import { createIdleScheduler } from '@src/browser' // requestIdleCallback yield
+import type { SchedulerInterface } from '@orkestrel/workflow'
+import { createNodeScheduler } from '@orkestrel/workflow/server' // setImmediate yield
+import { createIdleScheduler } from '@orkestrel/workflow/browser' // requestIdleCallback yield
 
 // Choose per environment at the edge…
 const scheduler: SchedulerInterface = isServer ? createNodeScheduler() : createIdleScheduler()
@@ -1000,7 +1000,7 @@ async function pump(work: () => void, signal: AbortSignal): Promise<void> {
 ### Driving a set of units with the `Runner`
 
 ```ts
-import { createRunner } from '@src/core'
+import { createRunner } from '@orkestrel/workflow'
 
 // Ordered (concurrency defaults to 1): each unit runs to completion before the next.
 const runner = createRunner<Job, Output>({ handler: (controller) => run(controller.input) })
@@ -1057,7 +1057,7 @@ const results = await runner.execute(roots) // declared roots first, then every 
 A `Runner` handler receives a `Controller` — the per-unit handle: its `id` / `input` / `signal` data plus `wait` (park until this unit is cancelled), `spawn` (fan out a sibling), and `abort` (cancel THIS unit, firing its signal with an optional reason).
 
 ```ts
-import { createRunner } from '@src/core'
+import { createRunner } from '@orkestrel/workflow'
 
 const runner = createRunner<Job, Output>({
 	concurrency: 4,
@@ -1099,7 +1099,7 @@ runner.destroy()
 `createDeferred` builds a `DeferredInterface` — a promise whose `resolve` / `reject` are exposed to the caller, for driving an async scenario's settlement externally instead of relying on a real delay:
 
 ```ts
-import { createDeferred } from '@src/core'
+import { createDeferred } from '@orkestrel/workflow'
 
 const deferred = createDeferred<string>()
 
@@ -1114,7 +1114,7 @@ await deferred.promise // 'done'
 The `Runner` exposes a typed `emitter` (AGENTS §13) carrying its run lifecycle for fire-and-forget observers — logging, metrics, tracing. Subscribe via `runner.emitter.on(...)`, or wire initial listeners through the reserved `on?` option; supply an `error?` handler to receive a listener's throw. **Emitting is observation-only**: every event fires strictly AFTER the relevant unit-launch / settle / drain transition, so a listener can never change what the run does — and a throwing listener can never corrupt it.
 
 ```ts
-import { createRunner } from '@src/core'
+import { createRunner } from '@orkestrel/workflow'
 
 const runner = createRunner<Job, Output>({
 	handler: (controller) => run(controller.input),
