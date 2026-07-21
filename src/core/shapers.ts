@@ -767,11 +767,16 @@ export const relationToolShape = unionShape(
 
 /**
  * The shape of {@link import('./factories.js').createInferTool}'s call arguments — one or more
- * example `samples` to infer a JSON Schema from, plus per-call `format` / `enum` toggles.
+ * example `samples` to infer a JSON Schema from, plus per-call `format` / `enum` toggles and an
+ * optional `candidates` array to check against the inferred schema.
  *
  * @remarks
  * `samples` requires at least one element (`min: 1`) — an empty array parses to `undefined`,
- * surfaced by the handler as a typed `TOOL` {@link import('./errors.js').AgentToolError}.
+ * surfaced by the handler as a typed `TOOL` {@link import('./errors.js').AgentToolError}. When
+ * `candidates` is present (any array, including empty), the handler compiles a contract from the
+ * freshly inferred schema and checks each candidate against it with a STRICT guard (`.is`, no
+ * coercion) — the opposite of {@link import('./factories.js').createEndpointTool}'s NORMALIZING
+ * `.parse` enforcement.
  */
 export const inferToolShape = objectShape({
 	samples: arrayShape(jsonShape(), {
@@ -787,6 +792,13 @@ export const inferToolShape = objectShape({
 	enum: optionalShape(
 		booleanShape({
 			description: 'Infer enum constraints from repeated literal values. Defaults to false.',
+		}),
+	),
+	candidates: optionalShape(
+		arrayShape(jsonShape(), {
+			description:
+				'Optional values to check against the freshly inferred schema. When present, the tool ' +
+				'returns a per-candidate verdict (strict — no coercion) alongside the inferred parameters.',
 		}),
 	),
 })

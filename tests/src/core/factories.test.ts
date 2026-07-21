@@ -2526,6 +2526,189 @@ describe('createInferTool', () => {
 		const result = await tool.execute({ samples: [{ deep, array }] })
 		expect(result).toBeDefined()
 	})
+
+	it('(c1) mixed candidates: correct indexes, valid true/false/false, coercible discriminates, faults present and non-empty ONLY on non-coercible entries', async () => {
+		const tool = createInferTool()
+		const samples = [
+			{ id: 1, name: 'Ada' },
+			{ id: 2, name: 'Bob' },
+		]
+		const result = await tool.execute({
+			samples,
+			candidates: [{ id: 3, name: 'Cy' }, { id: 4 }, 'not-a-record'],
+		})
+		expect(isRecord(result) ? result.checks : undefined).toEqual([
+			{ index: 0, valid: true, coercible: true },
+			{
+				index: 1,
+				valid: false,
+				coercible: false,
+				faults: [{ reason: 'missing', path: ['name'], expected: 'string' }],
+			},
+			{
+				index: 2,
+				valid: false,
+				coercible: false,
+				faults: [{ reason: 'type', path: [], expected: 'object', received: '"not-a-record"' }],
+			},
+		])
+	})
+
+	it('(c2) strict-verdict pin: a candidate that WOULD coerce under a normalizing parse is still INVALID under the strict guard, yielding coercible: true with EMPTY faults', async () => {
+		const tool = createInferTool()
+		const result = await tool.execute({
+			samples: [{ name: 'Ada' }],
+			candidates: [{ name: 7 }],
+		})
+		// contrast: createEndpointTool's enforcement NORMALIZES via `.parse` (7 coerces to '7' and
+		// would be accepted); createInferTool's candidate check uses the strict `.is` guard, where a
+		// number is never a string regardless of whether it coerces cleanly. `coercible: true` reports
+		// that the normalizing parse WOULD accept it, and `.explain` mirrors that leniency — so
+		// `faults` stays empty even though `valid` is false.
+		expect(isRecord(result) && Array.isArray(result.checks) ? result.checks[0] : undefined).toEqual(
+			{ index: 0, valid: false, coercible: true, faults: [] },
+		)
+	})
+
+	it('(c2b) non-coercible wrong-type candidate: a boolean in a string slot is invalid AND non-coercible, with non-empty faults', async () => {
+		const tool = createInferTool()
+		const result = await tool.execute({
+			samples: [{ name: 'Ada' }],
+			candidates: [{ name: true }],
+		})
+		// discriminates the three cases together with c1's index-0 (conformant: valid + coercible)
+		// and c2's index-0 (coercible-only: !valid but coercible) — this is the fully-rejected case:
+		// !valid and !coercible, with faults populated.
+		expect(isRecord(result) && Array.isArray(result.checks) ? result.checks[0] : undefined).toEqual(
+			{
+				index: 0,
+				valid: false,
+				coercible: false,
+				faults: [{ reason: 'type', path: ['name'], expected: 'string', received: 'true' }],
+			},
+		)
+	})
+
+	it('(c3) empty candidates array returns wrapped { parameters, checks: [] }, parameters deep-equal to the bare no-candidates return', async () => {
+		const tool = createInferTool()
+		const samples = [{ id: 1, name: 'Ada' }]
+		const bare = await tool.execute({ samples })
+		const wrapped = await tool.execute({ samples, candidates: [] })
+		expect(isRecord(wrapped) ? wrapped.checks : undefined).toEqual([])
+		expect(isRecord(wrapped) ? wrapped.parameters : undefined).toEqual(bare)
+	})
+
+	it('(c4) no candidates returns the bare parameters record, NOT a { parameters, checks } wrapper', async () => {
+		const tool = createInferTool()
+		const result = await tool.execute({ samples: [{ id: 1, name: 'Ada' }] })
+		expect(isRecord(result) ? 'checks' in result : undefined).toBe(false)
+		expect(result).toEqual({
+			type: 'object',
+			properties: { id: { type: 'integer' }, name: { type: 'string' } },
+			required: ['id', 'name'],
+			additionalProperties: false,
+		})
+	})
+
+	it('(c5) bare-value samples check candidates against the RAW string schema, not a value-wrapped object', async () => {
+		const tool = createInferTool()
+		const result = await tool.execute({ samples: ['a', 'b'], candidates: ['x', 7] })
+		expect(isRecord(result) ? result.parameters : undefined).toEqual({
+			type: 'object',
+			properties: { value: { type: 'string' } },
+			required: ['value'],
+			additionalProperties: false,
+		})
+		expect(isRecord(result) ? result.checks : undefined).toEqual([
+			{ index: 0, valid: true, coercible: true },
+			{ index: 1, valid: false, coercible: true, faults: [] },
+		])
+	})
+
+	it('(c6) enum:true rejects an out-of-enum candidate and accepts an in-enum one; format:true never asserts format on a check', async () => {
+		const tool = createInferTool()
+		const enumResult = await tool.execute({
+			samples: [{ status: 'open' }, { status: 'open' }, { status: 'closed' }],
+			enum: true,
+			candidates: [{ status: 'closed' }, { status: 'unknown' }],
+		})
+		expect(isRecord(enumResult) ? enumResult.checks : undefined).toEqual([
+			{ index: 0, valid: true, coercible: true },
+			{
+				index: 1,
+				valid: false,
+				coercible: false,
+				faults: [{ reason: 'type', path: ['status'], expected: 'literal', received: '"unknown"' }],
+			},
+		])
+
+		const formatResult = await tool.execute({
+			samples: [{ at: '2024-01-01T00:00:00.000Z' }],
+			format: true,
+			candidates: [{ at: 'not-an-email' }],
+		})
+		// format is never asserted — a non-email string in an email-inferred slot is still VALID.
+		expect(isRecord(formatResult) ? formatResult.checks : undefined).toEqual([
+			{ index: 0, valid: true, coercible: true },
+		])
+	})
+
+	it('(c7) hostile candidates complete without an unhandled throw escaping to the manager', async () => {
+		const tool = createInferTool()
+		const manager = createToolManager()
+		manager.add(tool)
+
+		// a __proto__-carrying JSON.parse'd candidate is a plain JSON-safe value — it reaches
+		// checker.is/.explain (both total) and yields a bounded, non-throwing verdict.
+		const hostileParsed = JSON.parse('{"name":"Ada","__proto__":{"polluted":true}}')
+		const parsedResult = await manager.execute({
+			id: 'call-1',
+			name: INFER_TOOL_NAME,
+			arguments: { samples: [{ name: 'Ada' }], candidates: [hostileParsed] },
+		})
+		expect(parsedResult.error).toBeUndefined()
+		const checks = isRecord(parsedResult.value) ? parsedResult.value.checks : undefined
+		expect(Array.isArray(checks)).toBe(true)
+		const verdicts = Array.isArray(checks)
+			? checks.map((check) => (isRecord(check) ? check.valid : undefined))
+			: []
+		expect(verdicts.every((valid) => typeof valid === 'boolean')).toBe(true)
+
+		// a throwing-getter Proxy is not a JSON-safe value at all — the outer args parse rejects it
+		// (same shape family as `samples`/`format`/`enum`), surfaced through the EXISTING malformed
+		// -args TOOL error path via the manager envelope, never as an unhandled exception.
+		const proxy = new Proxy(
+			{ name: 'Ada' },
+			{
+				get() {
+					throw new Error('hostile getter')
+				},
+			},
+		)
+		const proxyResult = await manager.execute({
+			id: 'call-2',
+			name: INFER_TOOL_NAME,
+			arguments: { samples: [{ name: 'Ada' }], candidates: [proxy] },
+		})
+		expect(proxyResult.value).toBeUndefined()
+		expect(proxyResult.error).toBeDefined()
+	})
+
+	it('(c8) malformed candidates arg (not an array) THROWS the existing TOOL error through the manager envelope', async () => {
+		const tool = createInferTool()
+		const manager = createToolManager()
+		manager.add(tool)
+		const result = await manager.execute({
+			id: 'call-1',
+			name: INFER_TOOL_NAME,
+			arguments: { samples: [{ id: 1 }], candidates: 'nope' },
+		})
+		expect(result.value).toBeUndefined()
+		expect(result.error).toBeDefined()
+
+		const direct = await rejectionOf(tool.execute({ samples: [{ id: 1 }], candidates: 'nope' }))
+		expect(isAgentToolError(direct) ? direct.code : undefined).toBe('TOOL')
+	})
 })
 
 // ── createEndpointTool — wraps one concrete endpoint over an inferred schema ─

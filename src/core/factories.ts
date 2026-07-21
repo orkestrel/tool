@@ -1421,11 +1421,39 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
  * @remarks
  * The universal tool-handler contract (AGENTS §14): validates the call args against
  * {@link import('./shapers.js').inferToolShape} (`samples` non-empty, `format` / `enum` optional
- * booleans), infers a schema via `@orkestrel/contract`'s `samplesToSchema`, wraps a non-object
- * root as `{ value: <schema> }` via `schemaToObject` (mirrors the tool-parameters convention every
- * other `create*Tool` factory advertises), and RETURNS the resulting parameters record. An empty
- * `samples` array fails `inferToolShape`'s `min: 1` bound — `contract.parse` returns `undefined`
- * and the handler throws a typed `TOOL` {@link import('./errors.js').AgentToolError}.
+ * booleans, `candidates` an optional array), infers a schema via `@orkestrel/contract`'s
+ * `samplesToSchema`, wraps a non-object root as `{ value: <schema> }` via `schemaToObject` (mirrors
+ * the tool-parameters convention every other `create*Tool` factory advertises), and RETURNS the
+ * resulting parameters record. An empty `samples` array fails `inferToolShape`'s `min: 1` bound —
+ * `contract.parse` returns `undefined` and the handler throws a typed `TOOL`
+ * {@link import('./errors.js').AgentToolError}.
+ *
+ * When `candidates` is ABSENT, the return is the bare parameters record — unchanged from before
+ * this array existed. When `candidates` is PRESENT (any array, including empty), the handler
+ * compiles a SEPARATE per-call contract from the RAW inferred schema (via `@orkestrel/contract`'s
+ * `schemaToShape`, NOT the `schemaToObject`-wrapped parameters — a bare-value sample checks a
+ * bare-value candidate) and returns `{ parameters, checks }`, one check per candidate at the same
+ * index. Every entry has a UNIFORM shape — `{ index, valid, coercible }`, with `faults` added ONLY
+ * when `valid` is `false`: `valid` is the STRICT guard verdict (`checker.is(candidate)`), the
+ * OPPOSITE of {@link createEndpointTool}'s enforcement, which coerces (`7` becomes `'7'` for a
+ * string slot) — here a conformance report answers "does this value conform AS-IS": `7` against a
+ * string slot is `valid: false`, full stop. `coercible` answers a SEPARATE question — "would the
+ * NORMALIZING parse accept this value", i.e. would {@link createEndpointTool}'s default enforcement
+ * admit it (`checker.parse(candidate) !== undefined`) — computed for every candidate regardless of
+ * `valid`; by the house parse/guard round-trip guarantee (AGENTS §14), a `valid: true` entry is
+ * ALWAYS also `coercible: true`. `@orkestrel/contract` 0.0.7's `explain` mirrors the normalizing
+ * `parse`'s leniency, not `is`'s strictness — so a strictly-invalid but coercible candidate (`7`
+ * against a string slot) yields `{ valid: false, coercible: true, faults: [] }`: EMPTY faults, since
+ * the mismatch the normalizing parse would silently fix is not one `explain` reports. `faults`
+ * therefore only ever populates for a NON-coercible mismatch — a wrong type the parse can't coerce
+ * (a boolean in a string slot), a missing required key, or an out-of-enum value — where
+ * `coercible: false`. `checker.is` / `.parse` / `.explain` are all total over JSON-safe input — a
+ * JSON-safe hostile candidate (a `__proto__`-carrying object, deeply nested data) reaches all three
+ * and yields a bounded, non-throwing per-candidate verdict; a NON-JSON-safe candidate (e.g. a
+ * throwing-getter `Proxy`) never reaches the checker at all — it fails the OUTER `args` parse
+ * against {@link import('./shapers.js').inferToolShape} and rejects the WHOLE call with the same
+ * `TOOL` {@link import('./errors.js').AgentToolError} a malformed `samples`/`format`/`enum` throws,
+ * with no per-candidate verdict produced.
  *
  * @param options - Advertised `name` / `description` overrides (see
  *   {@link import('./types.js').InferToolOptions})
@@ -1446,6 +1474,20 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
  * 	arguments: { samples: [{ id: 1, name: 'Ada' }, { id: 2, name: 'Bob' }] },
  * })
  * // result.value -> { type: 'object', properties: { id: {...}, name: {...} }, ... }
+ *
+ * // with candidates, the result is wrapped with per-candidate verdicts
+ * const checked = await tools.execute({
+ * 	id: 'call-2',
+ * 	name: 'infer',
+ * 	arguments: {
+ * 		samples: [{ id: 1, name: 'Ada' }],
+ * 		candidates: [{ id: 2, name: 'Bob' }, { id: 'x', name: 'Cy' }],
+ * 	},
+ * })
+ * // checked.value -> { parameters: {...}, checks: [
+ * //   { index: 0, valid: true, coercible: true },
+ * //   { index: 1, valid: false, coercible: false, faults: [...] },
+ * // ] }
  * ```
  */
 export function createInferTool(options?: InferToolOptions): ToolInterface {
@@ -1469,7 +1511,18 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
 			if (result === undefined) {
 				throw new AgentToolError('TOOL', 'could not infer a schema', { args })
 			}
-			return result
+			if (parsed.candidates === undefined) {
+				return result
+			}
+			const checker = createContract(schemaToShape(schema))
+			const checks = parsed.candidates.map((candidate, index) => {
+				const valid = checker.is(candidate)
+				const coercible = checker.parse(candidate) !== undefined
+				return valid
+					? { index, valid, coercible }
+					: { index, valid, coercible, faults: checker.explain(candidate) }
+			})
+			return { parameters: result, checks }
 		},
 	})
 }
