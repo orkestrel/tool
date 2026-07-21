@@ -30,6 +30,8 @@ import {
 	createAnswerTool,
 	createDatabaseTool,
 	createDescribeTool,
+	createEndpointTool,
+	createInferTool,
 	createMemoryDefinitionStore,
 	createPromptTool,
 	createRelationTool,
@@ -39,6 +41,7 @@ import {
 	createWorkspaceTool,
 	DATABASE_TOOL_NAME,
 	DESCRIBE_TOOL_NAME,
+	INFER_TOOL_NAME,
 	isAgentToolError,
 	MAX_WORKFLOW_DEPTH,
 	PROMPT_TOOL_NAME,
@@ -2381,5 +2384,332 @@ describe('pressure: createRelationTool — 200-parent seed, nested load, 50-row 
 			})
 			expect(isRecord(result) ? result.count : undefined).toBe(repIds.length - (i + 1))
 		}
+	})
+})
+
+// ── createInferTool — standalone JSON-Schema-from-samples utility ───────────
+
+describe('createInferTool', () => {
+	it('infers a parameters record from homogeneous object samples, deep-equal to the known contract 0.0.6 output', async () => {
+		const tool = createInferTool()
+		const manager = createToolManager()
+		manager.add(tool)
+		const result = await manager.execute({
+			id: 'call-1',
+			name: INFER_TOOL_NAME,
+			arguments: {
+				samples: [
+					{ id: 1, name: 'Ada' },
+					{ id: 2, name: 'Bob' },
+				],
+			},
+		})
+		expect(result.error).toBeUndefined()
+		expect(result.value).toEqual({
+			type: 'object',
+			properties: { id: { type: 'integer' }, name: { type: 'string' } },
+			required: ['id', 'name'],
+			additionalProperties: false,
+		})
+	})
+
+	it('the format toggle adds a string format only when true', async () => {
+		const tool = createInferTool()
+		const samples = [
+			{ createdAt: '2024-01-01T00:00:00.000Z' },
+			{ createdAt: '2024-02-01T00:00:00.000Z' },
+		]
+		const withoutFormat = await tool.execute({ samples })
+		expect(withoutFormat).toEqual({
+			type: 'object',
+			properties: { createdAt: { type: 'string' } },
+			required: ['createdAt'],
+			additionalProperties: false,
+		})
+		const withFormat = await tool.execute({ samples, format: true })
+		expect(withFormat).toEqual({
+			type: 'object',
+			properties: { createdAt: { type: 'string', format: 'date-time' } },
+			required: ['createdAt'],
+			additionalProperties: false,
+		})
+	})
+
+	it('the enum toggle adds an enum constraint only when true', async () => {
+		const tool = createInferTool()
+		const samples = [{ status: 'open' }, { status: 'open' }, { status: 'closed' }]
+		const withoutEnum = await tool.execute({ samples })
+		expect(withoutEnum).toEqual({
+			type: 'object',
+			properties: { status: { type: 'string' } },
+			required: ['status'],
+			additionalProperties: false,
+		})
+		const withEnum = await tool.execute({ samples, enum: true })
+		expect(withEnum).toEqual({
+			type: 'object',
+			properties: { status: { enum: ['closed', 'open'] } },
+			required: ['status'],
+			additionalProperties: false,
+		})
+	})
+
+	it('zero samples THROWS a typed TOOL AgentToolError, surfaced through the manager error envelope', async () => {
+		const tool = createInferTool()
+		const manager = createToolManager()
+		manager.add(tool)
+		const result = await manager.execute({
+			id: 'call-1',
+			name: INFER_TOOL_NAME,
+			arguments: { samples: [] },
+		})
+		expect(result.value).toBeUndefined()
+		expect(result.error).toBeDefined()
+
+		const direct = await rejectionOf(tool.execute({ samples: [] }))
+		expect(isAgentToolError(direct) ? direct.code : undefined).toBe('TOOL')
+	})
+
+	it('malformed args (missing samples) THROW a typed TOOL AgentToolError', async () => {
+		const tool = createInferTool()
+		const missing = await rejectionOf(tool.execute({}))
+		expect(isAgentToolError(missing) ? missing.code : undefined).toBe('TOOL')
+
+		const wrongType = await rejectionOf(tool.execute({ samples: 'not-an-array' }))
+		expect(isAgentToolError(wrongType) ? wrongType.code : undefined).toBe('TOOL')
+	})
+
+	it('name/description overrides are advertised on the returned ToolInterface', () => {
+		const tool = createInferTool({ name: 'schema', description: 'Custom description.' })
+		expect(tool.name).toBe('schema')
+		expect(tool.description).toBe('Custom description.')
+	})
+
+	it('defaults: omitted format/enum behave as false', async () => {
+		const tool = createInferTool()
+		const dateResult = await tool.execute({
+			samples: [{ at: '2024-01-01T00:00:00.000Z' }],
+		})
+		expect(isRecord(dateResult) && isRecord(dateResult.properties)).toBe(true)
+		const atSchema =
+			isRecord(dateResult) && isRecord(dateResult.properties) ? dateResult.properties.at : undefined
+		expect(isRecord(atSchema) ? atSchema.format : undefined).toBeUndefined()
+	})
+
+	it('heterogeneous samples (mixed object/string) still return a valid, value-wrapped parameters record', async () => {
+		const tool = createInferTool()
+		const result = await tool.execute({ samples: [{ a: 1 }, 'x'] })
+		expect(result).toEqual({
+			type: 'object',
+			properties: {
+				value: {
+					anyOf: [
+						{
+							type: 'object',
+							properties: { a: { type: 'integer' } },
+							required: ['a'],
+							additionalProperties: false,
+						},
+						{ type: 'string' },
+					],
+				},
+			},
+			required: ['value'],
+			additionalProperties: false,
+		})
+	})
+
+	it('deep nesting and a large array sample complete without throwing', async () => {
+		const tool = createInferTool()
+		const deep = { a: { b: { c: { d: { e: 'leaf' } } } } }
+		const array = Array.from({ length: 200 }, (_, i) => i)
+		const result = await tool.execute({ samples: [{ deep, array }] })
+		expect(result).toBeDefined()
+	})
+})
+
+// ── createEndpointTool — wraps one concrete endpoint over an inferred schema ─
+
+describe('createEndpointTool', () => {
+	it('infers and advertises parameters from samples', () => {
+		const tool = createEndpointTool({
+			name: 'lookupUser',
+			description: 'Look up a user by id.',
+			samples: [
+				{ id: '1', name: 'Ada' },
+				{ id: '2', name: 'Bob' },
+			],
+			invoke: (args) => args,
+		})
+		expect(tool.parameters).toEqual({
+			type: 'object',
+			properties: { id: { type: 'string' }, name: { type: 'string' } },
+			required: ['id', 'name'],
+			additionalProperties: false,
+		})
+	})
+
+	it('PASSTHROUGH: invoke receives the model-supplied args EXACTLY, even when they diverge from the inferred schema', async () => {
+		let received: unknown
+		const tool = createEndpointTool({
+			name: 'echo',
+			description: 'Echoes call args.',
+			samples: [{ id: '1' }],
+			invoke: (args) => {
+				received = args
+				return null
+			},
+		})
+		const args = { id: 'unrelated-shape', extra: { nested: true }, list: [1, 2, 3] }
+		await tool.execute(args)
+		expect(received).toEqual(args)
+	})
+
+	it('a sync invoke result flows back as the manager value', async () => {
+		const tool = createEndpointTool({
+			name: 'add',
+			description: 'Adds two numbers.',
+			samples: [{ a: 1, b: 2 }],
+			invoke: (args) => Number(args.a) + Number(args.b),
+		})
+		const manager = createToolManager()
+		manager.add(tool)
+		const result = await manager.execute({
+			id: 'call-1',
+			name: 'add',
+			arguments: { a: 3, b: 4 },
+		})
+		expect(result.value).toBe(7)
+		expect(result.error).toBeUndefined()
+	})
+
+	it('an async invoke result flows back as the manager value', async () => {
+		const tool = createEndpointTool({
+			name: 'fetchUser',
+			description: 'Fetches a user by id.',
+			samples: [{ id: '1' }],
+			invoke: async (args) => {
+				await Promise.resolve()
+				return { id: args.id, name: 'Ada' }
+			},
+		})
+		const manager = createToolManager()
+		manager.add(tool)
+		const result = await manager.execute({
+			id: 'call-1',
+			name: 'fetchUser',
+			arguments: { id: '1' },
+		})
+		expect(result.value).toEqual({ id: '1', name: 'Ada' })
+	})
+
+	it('invoke throwing surfaces exactly once through the manager error envelope, never double-wrapped', async () => {
+		const tool = createEndpointTool({
+			name: 'boom',
+			description: 'Always fails.',
+			samples: [{ x: 1 }],
+			invoke: () => {
+				throw new Error('endpoint failure')
+			},
+		})
+		const manager = createToolManager()
+		manager.add(tool)
+		const result = await manager.execute({ id: 'call-1', name: 'boom', arguments: { x: 1 } })
+		expect(result.value).toBeUndefined()
+		expect(result.error).toBe('endpoint failure')
+		expect(result.error?.split('endpoint failure').length).toBe(2)
+	})
+
+	it('async invoke rejecting surfaces exactly once through the manager error envelope, never double-wrapped', async () => {
+		const tool = createEndpointTool({
+			name: 'asyncBoom',
+			description: 'Always rejects.',
+			samples: [{ x: 1 }],
+			invoke: async () => {
+				await Promise.resolve()
+				throw new Error('async endpoint failure')
+			},
+		})
+		const manager = createToolManager()
+		manager.add(tool)
+		const result = await manager.execute({ id: 'call-1', name: 'asyncBoom', arguments: { x: 1 } })
+		expect(result.value).toBeUndefined()
+		expect(result.error).toBe('async endpoint failure')
+		expect(result.error?.split('async endpoint failure').length).toBe(2)
+	})
+
+	it('empty samples THROWS a typed TOOL AgentToolError at construction', () => {
+		let caught: unknown
+		try {
+			createEndpointTool({
+				name: 'empty',
+				description: 'No samples.',
+				samples: [],
+				invoke: (args) => args,
+			})
+		} catch (error) {
+			caught = error
+		}
+		expect(isAgentToolError(caught)).toBe(true)
+		expect(isAgentToolError(caught) ? caught.code : undefined).toBe('TOOL')
+	})
+
+	it('format/enum options change the advertised parameters', () => {
+		const samples = [{ status: 'open' }, { status: 'open' }, { status: 'closed' }]
+		const withoutEnum = createEndpointTool({
+			name: 'status',
+			description: 'Status endpoint.',
+			samples,
+			invoke: (args) => args,
+		})
+		expect(withoutEnum.parameters).toEqual({
+			type: 'object',
+			properties: { status: { type: 'string' } },
+			required: ['status'],
+			additionalProperties: false,
+		})
+		const withEnum = createEndpointTool(
+			{ name: 'status', description: 'Status endpoint.', samples, invoke: (args) => args },
+			{ enum: true },
+		)
+		expect(withEnum.parameters).toEqual({
+			type: 'object',
+			properties: { status: { enum: ['closed', 'open'] } },
+			required: ['status'],
+			additionalProperties: false,
+		})
+	})
+
+	it('advertises the descriptor name/description', () => {
+		const tool = createEndpointTool({
+			name: 'custom',
+			description: 'A custom endpoint.',
+			samples: [{ x: 1 }],
+			invoke: (args) => args,
+		})
+		expect(tool.name).toBe('custom')
+		expect(tool.description).toBe('A custom endpoint.')
+	})
+
+	it('non-object root samples (bare strings) advertise a value-wrapped root; invoke still receives raw args', async () => {
+		let received: unknown
+		const tool = createEndpointTool({
+			name: 'text',
+			description: 'Bare string samples.',
+			samples: ['a', 'b', 'c'],
+			invoke: (args) => {
+				received = args
+				return 'ok'
+			},
+		})
+		expect(tool.parameters).toEqual({
+			type: 'object',
+			properties: { value: { type: 'string' } },
+			required: ['value'],
+			additionalProperties: false,
+		})
+		const args = { value: 'hello', unrelated: true }
+		await tool.execute(args)
+		expect(received).toEqual(args)
 	})
 })

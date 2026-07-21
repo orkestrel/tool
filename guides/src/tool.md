@@ -6,6 +6,8 @@
 
 `createPromptTool` / `createAnswerTool` are the ASK / ANSWER halves of a terminal-mediated human-in-the-loop seam over a live `TerminalManagerInterface` (`@orkestrel/terminal`): `createPromptTool` BLOCKS the calling agent turn until the addressed terminal answers (`from` FIXED at construction, `to` supplied per call), re-surfacing a prompt cycle as `DEADLOCK` and an unanswered expiry as `EXPIRE`; `createAnswerTool` lists / answers the prompts addressed to a FIXED `to` terminal, coercing the model-supplied `value` to the original prompt's form before applying it, re-surfacing a failed apply as `ANSWER`. `createTerminalRoutes` ([`src/server`](../../src/server), the `@src/server` barrel) is the wire bridge for the SAME manager — two structural `{ method, path, handler }` route records (GET SSE stream + POST answer, one shared `:name`-templated path), carrying NO dependency on `@orkestrel/router`'s own `Route` type so a consumer mounts them against any router accepting that two-arg handler shape, and byte-compatible with `@orkestrel/terminal`'s own `PromptClient` (same GET url streams, same POST url answers, same `{ id, value }` body, same `x-orkestrel-token` header).
 
+`createInferTool` / `createEndpointTool` bridge an EXISTING API/DB surface into an LLM-callable `ToolInterface` over `@orkestrel/contract`'s sample-based schema inference — `createInferTool` a standalone utility a model calls to learn a JSON Schema from example values, `createEndpointTool` wrapping one concrete endpoint whose inferred `parameters` steer the model while `execute` passes the call through unvalidated (see the Contract invariant below).
+
 Source: [`src/core`](../../src/core) (the tool factories) and [`src/server`](../../src/server) (the terminal-routes wire bridge). Surfaced through the `@src/core` and `@src/server` barrels respectively.
 
 ## Surface
@@ -27,6 +29,8 @@ Source: [`src/core`](../../src/core) (the tool factories) and [`src/server`](../
 | `createRelationTool`            | function | Build the `operation`-discriminated `ToolInterface` (load/find/link/unlink/links) traversing/editing `@orkestrel/relation` relationships over a registry of live `RelationManagerInterface`s.                                                                                                                    |
 | `createMemoryDefinitionStore`   | function | Create the in-memory `DefinitionStoreInterface` — a process-lifetime `Map` of `DatabaseDefinition` configs, the DEFAULT store `createDatabaseTool` persists through.                                                                                                                                             |
 | `createDatabaseDefinitionStore` | function | Create a `DefinitionStoreInterface` backed by one `@orkestrel/database` table — the driver-pluggable twin of `createMemoryDefinitionStore`, storing each definition as one opaque JSON column.                                                                                                                   |
+| `createInferTool`               | function | Build a standalone `ToolInterface` that infers a JSON Schema (as a `parameters`-shaped record) from one or more example `samples` — the utility half of the API/DB → MCP bridge.                                                                                                                                 |
+| `createEndpointTool`            | function | Wrap one concrete `EndpointDefinition` as a `ToolInterface` — `parameters` inferred ONCE at construction from `samples`; `execute` PASSES model-supplied args through to `invoke` UNVALIDATED (a capability boundary, not an oversight — see Contract invariant 23).                                             |
 
 ### Stores
 
@@ -106,6 +110,7 @@ The shape VALUES each `create*Tool` factory (and `createWorkflowDraftContract`) 
 | `singleKeyShape`     | const | A single relation row key (not an array) — used by `'link'` / `'unlink'` / `'links'`, which address exactly one owning row.                                                       |
 | `includeShape`       | const | Flat dot-path relation include list, expanded via `expandInclude`.                                                                                                                |
 | `managerShape`       | const | Which registered relation manager to address — omitted resolves to the sole registered manager.                                                                                   |
+| `inferToolShape`     | const | The shape of `createInferTool`'s call args — `samples` (array, `min: 1`) plus optional `format` / `enum` toggles.                                                                 |
 
 ### Constants
 
@@ -144,6 +149,9 @@ The shape VALUES each `create*Tool` factory (and `createWorkflowDraftContract`) 
 | `RELATION_TOOL_DESCRIPTION`    | const | The multi-line description `createRelationTool` advertises — the 5 operations and the flat dot-path `include` syntax, a worked example.                    |
 | `RELATION_TOOL_LIMIT`          | const | The default cap (`1000`) on rows a `'find'` / `'links'` call returns when the caller omits `limit`.                                                        |
 | `RELATION_TOOL_DEPTH`          | const | The default cap (`3`) on how many `include` path segments deep a `'load'` / `'find'` call may traverse.                                                    |
+| `INFER_TOOL_NAME`              | const | The name (`'infer'`) `createInferTool` advertises by default.                                                                                              |
+| `INFER_TOOL_SUMMARY`           | const | The lean one-sentence `summary` `createInferTool` advertises in place of `INFER_TOOL_DESCRIPTION`.                                                         |
+| `INFER_TOOL_DESCRIPTION`       | const | The multi-line description `createInferTool` advertises — `samples` required, `format`/`enum` optional, a worked example.                                  |
 
 ### Types
 
@@ -172,6 +180,10 @@ The shape VALUES each `create*Tool` factory (and `createWorkflowDraftContract`) 
 | `DefinitionStoreInterface` | interface | `{ get, set, delete }` — the point-access persistence seam for `DatabaseDefinition` configs (AGENTS §5 — Stores); every primitive async, `delete` of an absent id a no-op.                                                                          |
 | `DatabaseToolOptions`      | interface | `{ name?, description?, databases?, store?, drivers?, key?, limit?, timeout?, readonly? }` — `createDatabaseTool`'s seed handles, optional `DefinitionStoreInterface`, driver registry, key function, row cap, per-call timeout, and mutation lock. |
 | `RelationToolOptions`      | interface | `{ name?, description?, managers, limit?, depth? }` — `createRelationTool`'s REQUIRED live `RelationManagerInterface` registry, row cap, and `include` depth cap.                                                                                   |
+| `InferToolOptions`         | interface | `{ name?, description? }` — `createInferTool`'s advertised overrides; `format`/`enum` are RUNTIME call args, not construction options.                                                                                                              |
+| `EndpointHandler`          | type      | `(args: Readonly<Record<string, unknown>>) => Promise<unknown> \| unknown` — mirrors `@orkestrel/agent`'s `ToolOptions.execute` signature EXACTLY, so `execute: (args) => definition.invoke(args)` typechecks with zero assertions.                 |
+| `EndpointDefinition`       | interface | `{ name, description, samples, invoke }` — one concrete endpoint `createEndpointTool` wraps; `samples` MUST be non-empty (checked at construction).                                                                                                 |
+| `EndpointToolOptions`      | interface | `{ format?, enum? }` — construction-time inference tuning for `createEndpointTool`'s advertised `parameters`; both default to `false`.                                                                                                              |
 
 ### Server routes
 
@@ -251,6 +263,8 @@ These invariants hold across `src/core` ↔ `tool.md`:
 21. **The relation tool's `include` is a FLAT dot-path list, capped by `RelationToolOptions.depth`.** `'load'` / `'find'` accept `include?: string[]` — each path a dot-separated chain of relation names (`'contacts.account'`) — expanded by `expandInclude` into a live `@orkestrel/relation` `Include` tree; a longer path SUBSUMES a shorter sibling's bare `true` (`['contacts', 'contacts.account']` → `{ contacts: { account: true } }`). A path exceeding `depth` segments (default `RELATION_TOOL_DEPTH`), or carrying an empty segment (a leading/trailing/doubled `.`), throws a typed `TOOL` `AgentToolError` before any query runs. `relationManagerOf` resolves which registered `RelationManagerInterface` a call addresses (an explicit `manager` miss, or an omitted one with other-than-exactly-one registered, throws typed `TOOL`); `relationModelOf` resolves `model` against it the same way.
 
 22. **`createDatabaseTool` durability and ownership are narrower than they look.** A lazily re-minted database over the DEFAULT in-memory driver yields an EMPTY database — only the `DatabaseDefinition` schema persists in `store`, never rows; durable rows need a persistent driver factory registered in `DatabaseToolOptions.drivers`. `'destroy'` closes whatever handle is cached for the id, INCLUDING an embedder-supplied `DatabaseToolOptions.databases` handle — the embedder relinquishes that handle's lifecycle to this tool for any id it wires in. The tool assumes the single-writer, non-reentrant model `@orkestrel/database` itself assumes — concurrent tool calls against one id are NOT serialized by this tool. Unlike `'records'` / `'find'` / `'links'`, `'get'` is UNCAPPED by `DatabaseToolOptions.limit` (bounded only by the caller's `key` array size).
+
+23. **`createEndpointTool` ADVERTISES an inferred schema but PASSES its call through UNVALIDATED — a capability boundary, not an oversight.** `parameters` is inferred ONCE at construction (`samplesToSchema` + `schemaToObject` over `definition.samples`, tuned by `EndpointToolOptions.format`/`enum`) so the model sees a shaped, steering schema; `execute` then calls `definition.invoke(args)` with the model-supplied `args` EXACTLY as received, never re-parsed or re-validated against that schema. `@orkestrel/contract` provides schema INFERENCE (value/samples → `JSONSchema`) but no JSON-Schema → runtime-parser direction — there is no compiled guard to validate an inferred (not hand-authored) schema against, unlike every other `create*Tool` factory in this package, which validates against a hand-written `*Shape` compiled by `createContract`. `createInferTool`, by contrast, is a pure utility — its own call args ARE validated against `inferToolShape` (a hand-written shape), since it is the schema INFERENCE's caller, not an inferred schema's consumer. Both factories' inferred schemas surface sample-derived strings VERBATIM (property names, and enum entries when opted in), so sample data intended for schema inference should be treated as untrusted content whenever the resulting schema will be advertised to other agents.
 
 ## Patterns
 
@@ -731,6 +745,60 @@ declare const managers: Readonly<
 >
 const resolved = relationManagerOf(managers, undefined) // the sole registered manager, or throws
 relationModelOf(resolved, 'accounts') // the resolved model, or throws on an unknown name
+```
+
+### Inferring a JSON Schema from example values, via a real `ToolManager`
+
+```ts
+import { createInferTool } from '@orkestrel/tool'
+import { createToolManager } from '@orkestrel/agent'
+
+const tool = createInferTool()
+const tools = createToolManager()
+tools.add(tool)
+
+const result = await tools.execute({
+	id: 'call-1',
+	name: 'infer',
+	arguments: {
+		samples: [
+			{ id: 1, name: 'Ada' },
+			{ id: 2, name: 'Bob' },
+		],
+	},
+})
+// result.value -> {
+//   type: 'object',
+//   properties: { id: { type: 'integer' }, name: { type: 'string' } },
+//   required: ['id', 'name'],
+//   additionalProperties: false,
+// }
+```
+
+### Bridging an existing API endpoint into an LLM-callable tool
+
+```ts
+import { createEndpointTool } from '@orkestrel/tool'
+import { createToolManager } from '@orkestrel/agent'
+
+// A real handler over an existing API/DB call — samples teach the inferred `parameters`.
+const tool = createEndpointTool({
+	name: 'lookupUser',
+	description: 'Look up a user by id.',
+	samples: [
+		{ id: '1', name: 'Ada' },
+		{ id: '2', name: 'Bob' },
+	],
+	invoke: async (args) => ({ id: args.id, name: 'Ada' }), // a real endpoint call goes here
+})
+
+const tools = createToolManager()
+tools.add(tool)
+
+const result = await tools.execute({ id: 'call-1', name: 'lookupUser', arguments: { id: '1' } })
+// result.value -> { id: '1', name: 'Ada' }
+// NOTE: `args` reaches `invoke` UNVALIDATED against the advertised schema — see Contract
+// invariant 23. The advertised `parameters` only steers the model; it is not a runtime guard.
 ```
 
 ## Tests

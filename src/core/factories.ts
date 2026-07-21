@@ -19,6 +19,9 @@ import type {
 	DatabaseDefinitionRow,
 	DatabaseToolOptions,
 	DefinitionStoreInterface,
+	EndpointDefinition,
+	EndpointToolOptions,
+	InferToolOptions,
 	PromptToolOptions,
 	RelationToolOptions,
 	WorkflowDraft,
@@ -35,7 +38,14 @@ import {
 	rangeOf,
 	WorkspaceError,
 } from '@orkestrel/agent'
-import { createContract, rawShape, schemaToParameters, stringShape } from '@orkestrel/contract'
+import {
+	createContract,
+	rawShape,
+	samplesToSchema,
+	schemaToObject,
+	schemaToParameters,
+	stringShape,
+} from '@orkestrel/contract'
 import { isTerminalError } from '@orkestrel/terminal'
 import { createDatabase, createMemoryDriver, generateUUID } from '@orkestrel/database'
 import { createWorkflowContract, WorkflowError } from '@orkestrel/workflow'
@@ -57,6 +67,9 @@ import {
 	DESCRIBE_TOOL_DESCRIPTION,
 	DESCRIBE_TOOL_NAME,
 	DESCRIBE_TOOL_SUMMARY,
+	INFER_TOOL_DESCRIPTION,
+	INFER_TOOL_NAME,
+	INFER_TOOL_SUMMARY,
 	MAX_WORKFLOW_DEPTH,
 	PROMPT_TOOL_DESCRIPTION,
 	PROMPT_TOOL_NAME,
@@ -97,6 +110,7 @@ import {
 	answerToolShape,
 	databaseToolShape,
 	describeToolShape,
+	inferToolShape,
 	promptToolShape,
 	relationToolShape,
 	workflowDraftShape,
@@ -1394,5 +1408,129 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
 				)
 			}
 		},
+	})
+}
+
+/**
+ * Build a standalone LLM-callable tool that infers a JSON Schema from example values — the
+ * utility half of the "existing API/DB → MCP tool" bridge (the other half,
+ * {@link createEndpointTool}, wraps one CONCRETE endpoint).
+ *
+ * @remarks
+ * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * {@link import('./shapers.js').inferToolShape} (`samples` non-empty, `format` / `enum` optional
+ * booleans), infers a schema via `@orkestrel/contract`'s `samplesToSchema`, wraps a non-object
+ * root as `{ value: <schema> }` via `schemaToObject` (mirrors the tool-parameters convention every
+ * other `create*Tool` factory advertises), and RETURNS the resulting parameters record. An empty
+ * `samples` array fails `inferToolShape`'s `min: 1` bound — `contract.parse` returns `undefined`
+ * and the handler throws a typed `TOOL` {@link import('./errors.js').AgentToolError}.
+ *
+ * @param options - Advertised `name` / `description` overrides (see
+ *   {@link import('./types.js').InferToolOptions})
+ * @returns A `ToolInterface` (named {@link import('./constants.js').INFER_TOOL_NAME} by default)
+ *
+ * @example
+ * ```ts
+ * import { createInferTool } from '@src/core'
+ * import { createToolManager } from '@orkestrel/agent'
+ *
+ * const tool = createInferTool()
+ * const tools = createToolManager()
+ * tools.add(tool)
+ *
+ * const result = await tools.execute({
+ * 	id: 'call-1',
+ * 	name: 'infer',
+ * 	arguments: { samples: [{ id: 1, name: 'Ada' }, { id: 2, name: 'Bob' }] },
+ * })
+ * // result.value -> { type: 'object', properties: { id: {...}, name: {...} }, ... }
+ * ```
+ */
+export function createInferTool(options?: InferToolOptions): ToolInterface {
+	const contract = createContract(inferToolShape)
+	const parameters = schemaToParameters(contract.schema)
+	return createTool({
+		name: options?.name ?? INFER_TOOL_NAME,
+		description: options?.description ?? INFER_TOOL_DESCRIPTION,
+		summary: INFER_TOOL_SUMMARY,
+		parameters,
+		execute: async (args) => {
+			const parsed = contract.parse(args)
+			if (parsed === undefined) {
+				throw new AgentToolError('TOOL', 'malformed infer arguments', { args })
+			}
+			const schema = samplesToSchema(parsed.samples, {
+				format: parsed.format ?? false,
+				enum: parsed.enum ?? false,
+			})
+			const result = schemaToParameters(schemaToObject(schema))
+			if (result === undefined) {
+				throw new AgentToolError('TOOL', 'could not infer a schema', { args })
+			}
+			return result
+		},
+	})
+}
+
+/**
+ * Wrap one CONCRETE endpoint ({@link import('./types.js').EndpointDefinition}) as an LLM-callable
+ * `ToolInterface` — the endpoint half of the "existing API/DB → MCP tool" bridge (the other half,
+ * {@link createInferTool}, is a standalone inference utility).
+ *
+ * @remarks
+ * `parameters` is inferred ONCE at construction from `definition.samples` via
+ * `@orkestrel/contract`'s `samplesToSchema` (tuned by {@link import('./types.js').EndpointToolOptions}'s
+ * `format` / `enum`), wrapping a non-object root as `{ value: <schema> }` via `schemaToObject` —
+ * the ADVERTISED schema that steers the model. `execute` PASSES THROUGH the model-supplied `args`
+ * to `definition.invoke` WITHOUT re-validation against that schema: `@orkestrel/contract` has no
+ * JSON-Schema → runtime-parser direction, so re-validating an inferred (not hand-authored)
+ * schema is a capability boundary, not an oversight (see the Contract invariant in `tool.md`).
+ * `invoke`'s return flows back as the tool call's plain result; a throw PROPAGATES uncaught,
+ * isolated by the `ToolManagerInterface` (`@orkestrel/agent`) into the canonical error envelope
+ * (AGENTS §14) — never caught or re-wrapped here.
+ *
+ * @param definition - The endpoint's identity, non-empty samples, and local handler (see
+ *   {@link import('./types.js').EndpointDefinition})
+ * @param options - Construction-time inference tuning (see
+ *   {@link import('./types.js').EndpointToolOptions})
+ * @returns A `ToolInterface` named `definition.name`
+ *
+ * @example
+ * ```ts
+ * import { createEndpointTool } from '@src/core'
+ * import { createToolManager } from '@orkestrel/agent'
+ *
+ * const tool = createEndpointTool({
+ * 	name: 'lookupUser',
+ * 	description: 'Look up a user by id.',
+ * 	samples: [{ id: '1', name: 'Ada' }, { id: '2', name: 'Bob' }],
+ * 	invoke: (args) => ({ id: args.id, name: 'Ada' }),
+ * })
+ * const tools = createToolManager()
+ * tools.add(tool)
+ *
+ * const result = await tools.execute({ id: 'call-1', name: 'lookupUser', arguments: { id: '1' } })
+ * // result.value -> { id: '1', name: 'Ada' }
+ * ```
+ */
+export function createEndpointTool(
+	definition: EndpointDefinition,
+	options?: EndpointToolOptions,
+): ToolInterface {
+	if (definition.samples.length === 0) {
+		throw new AgentToolError('TOOL', 'endpoint requires at least one sample', {
+			name: definition.name,
+		})
+	}
+	const schema = samplesToSchema(definition.samples, {
+		format: options?.format ?? false,
+		enum: options?.enum ?? false,
+	})
+	const parameters = schemaToParameters(schemaToObject(schema))
+	return createTool({
+		name: definition.name,
+		description: definition.description,
+		parameters,
+		execute: (args) => definition.invoke(args),
 	})
 }

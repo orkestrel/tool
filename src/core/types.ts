@@ -543,3 +543,71 @@ export interface RelationToolOptions {
 	readonly limit?: number
 	readonly depth?: number
 }
+
+// === Infer / endpoint bridge (existing API/DB → MCP tool)
+//
+// `createInferTool` and `createEndpointTool` bridge an EXISTING API/DB surface into an
+// LLM-callable `ToolInterface`, built on `@orkestrel/contract`'s sample-based schema inference
+// (`samplesToSchema` / `schemaToObject` / `schemaToParameters`). `createInferTool` is a
+// STANDALONE utility tool a model calls directly to learn a JSON Schema from example values;
+// `createEndpointTool` wraps one CONCRETE endpoint (`EndpointDefinition`) — its `parameters` are
+// inferred ONCE at construction from `samples` and advertised to steer the model, but `execute`
+// PASSES THROUGH the model-supplied `args` to `invoke` WITHOUT re-validation (the contract
+// package has no JSON-Schema → runtime-parser direction — a capability boundary, not an
+// oversight; see the Contract invariant in `tool.md`).
+
+/**
+ * Options for {@link import('./factories.js').createInferTool} — advertised name/description
+ * overrides only; `format` / `enum` are RUNTIME call arguments (see
+ * {@link import('./shapers.js').inferToolShape}), not construction-time options, since a model
+ * chooses them per call.
+ */
+export interface InferToolOptions {
+	readonly name?: string
+	readonly description?: string
+}
+
+/**
+ * The handler {@link import('./types.js').EndpointDefinition.invoke} implements — mirrors
+ * `@orkestrel/agent`'s `ToolOptions.execute` signature EXACTLY (same `Readonly<Record<string,
+ * unknown>>` argument, same `Promise<unknown> | unknown` return) so
+ * `execute: (args) => definition.invoke(args)` typechecks with zero assertions in
+ * {@link import('./factories.js').createEndpointTool}.
+ */
+export type EndpointHandler = (
+	args: Readonly<Record<string, unknown>>,
+) => Promise<unknown> | unknown
+
+/**
+ * One concrete endpoint {@link import('./factories.js').createEndpointTool} wraps as an
+ * LLM-callable `ToolInterface` — the advertised identity, a non-empty set of example values its
+ * `parameters` are inferred from, and the local handler that runs a call.
+ *
+ * @remarks
+ * `samples` MUST be non-empty — {@link import('./factories.js').createEndpointTool} throws a
+ * typed `TOOL` {@link import('./errors.js').AgentToolError} at CONSTRUCTION when it is empty,
+ * since an empty sample set cannot infer a schema. `invoke` receives the model-supplied `args`
+ * VERBATIM (passthrough, never re-validated against the inferred schema) and its return flows
+ * back as the tool call's result; a throw PROPAGATES uncaught, isolated by the
+ * `ToolManagerInterface` (`@orkestrel/agent`) into the canonical error envelope. When `samples`
+ * are non-object values, the advertised schema wraps them under a single required `value`
+ * property, so `invoke` receives an `args` record of the shape `{ value: ... }` — never the bare
+ * value.
+ */
+export interface EndpointDefinition {
+	readonly name: string
+	readonly description: string
+	readonly samples: readonly unknown[]
+	readonly invoke: EndpointHandler
+}
+
+/**
+ * Construction-time schema-inference tuning for {@link import('./factories.js').createEndpointTool}
+ * — whether the inferred `parameters` schema carries string `format` / `enum` constraints.
+ * Defaults to `false` for both, matching `@orkestrel/contract`'s own `ValueToSchemaOptions`
+ * defaults.
+ */
+export interface EndpointToolOptions {
+	readonly format?: boolean
+	readonly enum?: boolean
+}

@@ -764,3 +764,29 @@ export const relationToolShape = unionShape(
 		relation: stringShape({ min: 1, description: 'The "through" relation name.' }),
 	}),
 )
+
+/**
+ * The shape of {@link import('./factories.js').createInferTool}'s call arguments — one or more
+ * example `samples` to infer a JSON Schema from, plus per-call `format` / `enum` toggles.
+ *
+ * @remarks
+ * `samples` requires at least one element (`min: 1`) — an empty array parses to `undefined`,
+ * surfaced by the handler as a typed `TOOL` {@link import('./errors.js').AgentToolError}.
+ */
+export const inferToolShape = objectShape({
+	samples: arrayShape(jsonShape(), {
+		min: 1,
+		description: 'The example values to infer a JSON Schema from (at least one).',
+	}),
+	format: optionalShape(
+		booleanShape({
+			description:
+				'Infer string formats (date-time, email, ...) from the samples. Defaults to false.',
+		}),
+	),
+	enum: optionalShape(
+		booleanShape({
+			description: 'Infer enum constraints from repeated literal values. Defaults to false.',
+		}),
+	),
+})

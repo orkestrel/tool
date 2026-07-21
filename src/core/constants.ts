@@ -453,3 +453,42 @@ export const RELATION_TOOL_LIMIT = 1000
 
 /** The default cap on how many `include` path segments deep a `load` / `find` call may traverse — the relation tool's default include-depth ceiling. */
 export const RELATION_TOOL_DEPTH = 3
+
+/**
+ * The name {@link import('./factories.js').createInferTool} advertises by default — the key a
+ * model calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ */
+export const INFER_TOOL_NAME = 'infer'
+
+/**
+ * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createInferTool}
+ * advertises in place of {@link INFER_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
+ * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
+ * for the full teaching description; the full text stays retrievable via
+ * {@link import('./factories.js').createDescribeTool}.
+ */
+export const INFER_TOOL_SUMMARY =
+	"Infer a JSON Schema (as advertised tool parameters) from one or more example values. Call describe('infer') for the required fields."
+
+export const INFER_TOOL_DESCRIPTION = [
+	'Infer a JSON Schema from example values, returned in the same shape a tool advertises its parameters.',
+	'',
+	'Required:',
+	'  samples - an array of at least one example value to infer the schema from.',
+	'Optional:',
+	'  format  - infer string formats (date-time, email, ...) from the samples. Defaults to false.',
+	'  enum    - infer enum constraints from repeated literal values across the samples. Defaults to false.',
+	'Example:',
+	`  in:  ${JSON.stringify({
+		samples: [
+			{ id: 1, name: 'Ada' },
+			{ id: 2, name: 'Bob' },
+		],
+	})}`,
+	`  out: ${JSON.stringify({
+		type: 'object',
+		properties: { id: { type: 'integer' }, name: { type: 'string' } },
+		required: ['id', 'name'],
+		additionalProperties: false,
+	})}`,
+].join('\n')
