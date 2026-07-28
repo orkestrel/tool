@@ -1,41 +1,15 @@
-import type { TimerCancel, TimerHandler } from '@orkestrel/terminal'
 import type { TerminalRoute } from '@src/server'
+import { DEFAULT_BODY_LIMIT } from '@orkestrel/server'
 import { HEADER_TOKEN } from '@orkestrel/terminal'
 import { createTerminalManager } from '@orkestrel/terminal'
 import { createTerminalRoutes } from '@src/server'
+import { createTestTimer, readAvailable } from '../../setupServer.js'
 import { describe, expect, it } from 'vitest'
 
 // tests/src/server/factories.test.ts — mirrors src/server/factories.ts. Handlers are invoked
 // DIRECTLY against a real `createTerminalManager` (`@orkestrel/terminal`) for deterministic
 // coverage (AGENTS §16 — no mocks); a fake, controllable `TimerHandler` drives the SSE keepalive
 // without wall-clock timing.
-
-/** A controllable fake `TimerHandler` — records armed `(callback, ms)` pairs and lets a test fire one on demand. */
-function createFakeTimer(): {
-	readonly timer: TimerHandler
-	fire: (index: number) => void
-	readonly armed: number
-} {
-	const armed: Array<{ callback: () => void; cancelled: boolean }> = []
-	const timer: TimerHandler = (callback, _ms) => {
-		const entry = { callback, cancelled: false }
-		armed.push(entry)
-		const cancel: TimerCancel = () => {
-			entry.cancelled = true
-		}
-		return cancel
-	}
-	return {
-		timer,
-		fire(index: number): void {
-			const entry = armed[index]
-			if (entry !== undefined && !entry.cancelled) entry.callback()
-		},
-		get armed() {
-			return armed.length
-		},
-	}
-}
 
 function findRoute(
 	routes: readonly TerminalRoute[],
@@ -46,24 +20,6 @@ function findRoute(
 	return route
 }
 
-/** Read every chunk currently buffered on an SSE `Response`'s body, decoded to text. */
-async function readAvailable(response: Response): Promise<string> {
-	const reader = response.body?.getReader()
-	if (reader === undefined) return ''
-	const decoder = new TextDecoder()
-	let text = ''
-	const timeout = new Promise<{ done: true; value: undefined }>((resolve) =>
-		setTimeout(() => resolve({ done: true, value: undefined }), 20),
-	)
-	while (true) {
-		const result = await Promise.race([reader.read(), timeout])
-		if (result.done) break
-		text += decoder.decode(result.value, { stream: true })
-	}
-	reader.releaseLock()
-	return text
-}
-
 describe('createTerminalRoutes', () => {
 	it('returns exactly two routes, GET and POST, on the same path', () => {
 		const manager = createTerminalManager()
@@ -71,6 +27,16 @@ describe('createTerminalRoutes', () => {
 		expect(routes).toHaveLength(2)
 		expect(routes.map((r) => r.method).sort()).toEqual(['GET', 'POST'])
 		expect(new Set(routes.map((r) => r.path)).size).toBe(1)
+	})
+
+	it('returns 404 when a route context omits the name parameter', async () => {
+		const manager = createTerminalManager()
+		const routes = createTerminalRoutes(manager)
+		const request = new Request('http://x/terminals')
+		for (const route of routes) {
+			const response = await route.handler(request, { params: {} })
+			expect(response.status).toBe(404)
+		}
 	})
 
 	it('GET 404s on an unknown endpoint name', async () => {
@@ -100,7 +66,7 @@ describe('createTerminalRoutes', () => {
 	})
 
 	it('GET streams a replayed pending prompt, a live pending event, and an expire event; keepalive fires; abort ends the stream', async () => {
-		const fake = createFakeTimer()
+		const fake = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant', { timeout: 5, timer: fake.timer })
 		const routes = createTerminalRoutes(manager, { timer: fake.timer, keepalive: 1000 })
@@ -223,7 +189,7 @@ describe('createTerminalRoutes', () => {
 	})
 
 	it('function token: a live stream is torn down on the keepalive tick once the validator starts rejecting the presented value, and does not re-arm', async () => {
-		const fake = createFakeTimer()
+		const fake = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		let acceptable = true
@@ -287,7 +253,7 @@ describe('createTerminalRoutes', () => {
 	})
 
 	it('static string token: keepalive re-validation is a no-op for a live stream — several ticks keep it open with comments written', async () => {
-		const fake = createFakeTimer()
+		const fake = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		const routes = createTerminalRoutes(manager, {
@@ -382,7 +348,7 @@ describe('createTerminalRoutes', () => {
 	})
 
 	it('a live stream is torn down on the keepalive tick when the validator THROWS mid-stream (fail-closed), not re-armed, no uncaught exception', async () => {
-		const fake = createFakeTimer()
+		const fake = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		let shouldThrow = false
@@ -433,40 +399,9 @@ describe('createTerminalRoutes', () => {
 
 // ── pressure: mount churn — repeated GET connect→abort cycles ────────────────
 
-/** A controllable fake `TimerHandler` that also tracks arm/cancel balance across many cycles. */
-function createChurnTimer(): {
-	readonly timer: TimerHandler
-	fire: (index: number) => void
-	readonly armedCount: number
-	readonly cancelledCount: number
-} {
-	const armed: Array<{ callback: () => void; cancelled: boolean }> = []
-	const timer: TimerHandler = (callback, _ms) => {
-		const entry = { callback, cancelled: false }
-		armed.push(entry)
-		const cancel: TimerCancel = () => {
-			entry.cancelled = true
-		}
-		return cancel
-	}
-	return {
-		timer,
-		fire(index: number): void {
-			const entry = armed[index]
-			if (entry !== undefined && !entry.cancelled) entry.callback()
-		},
-		get armedCount() {
-			return armed.length
-		},
-		get cancelledCount() {
-			return armed.filter((entry) => entry.cancelled).length
-		},
-	}
-}
-
 describe('pressure: mount churn — 50 sequential GET connect→abort cycles, no leaked timers/listeners', () => {
 	it('every armed keepalive timer is cancelled on abort — zero live timers after churn', async () => {
-		const churn = createChurnTimer()
+		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
@@ -486,12 +421,12 @@ describe('pressure: mount churn — 50 sequential GET connect→abort cycles, no
 
 		// One keepalive timer armed per connect (50 total), and every one cancelled on its own
 		// abort — the churn leaves zero LIVE (uncancelled) timers behind.
-		expect(churn.armedCount).toBe(50)
-		expect(churn.cancelledCount).toBe(churn.armedCount)
+		expect(churn.armed).toBe(50)
+		expect(churn.cancelled).toBe(churn.armed)
 	})
 
 	it('after 50 churn cycles, manager listener counts are back to baseline (no leaked pending/expire subscriptions)', async () => {
-		const churn = createChurnTimer()
+		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
@@ -516,7 +451,7 @@ describe('pressure: mount churn — 50 sequential GET connect→abort cycles, no
 	})
 
 	it('a fresh stream after churn receives EXACTLY ONE pending frame for one parked prompt — no ghost duplicate writes from prior cycles', async () => {
-		const churn = createChurnTimer()
+		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
@@ -663,7 +598,7 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 	})
 
 	it('correct token + well-formed payload for an EXPIRED id: manager.answer reports unknown — 422, manager state untouched', async () => {
-		const churn = createChurnTimer()
+		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant', { timeout: 5, timer: churn.timer })
 		const routes = createTerminalRoutes(manager, { token: 'secret', timer: churn.timer })
@@ -734,6 +669,24 @@ describe('pressure: bounded POST body — over-limit rejected 413, manager untou
 		expect(manager.pending('assistant')).toEqual(before)
 	})
 
+	it('a non-finite limit defaults instead of bypassing the byte cap', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager, { limit: Number.NaN })
+		const post = findRoute(routes, 'POST')
+		const init = {
+			method: 'POST',
+			body: makeStreamBody(DEFAULT_BODY_LIMIT + 1),
+			duplex: 'half',
+		}
+
+		const response = await post.handler(new Request('http://x/terminals/assistant', init), {
+			params: { name: 'assistant' },
+		})
+
+		expect(response.status).toBe(413)
+	})
+
 	it('a small `Content-Length` header lying about a big streamed body is still capped (limit ignores the header)', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
@@ -784,7 +737,7 @@ describe('pressure: bounded POST body — over-limit rejected 413, manager untou
 
 describe('self-heal: consumer-side stream close (no signal abort) tears down on next event / keepalive tick', () => {
 	it('a live `pending` event on a closed-but-not-aborted stream detaches listeners and cancels the keepalive', async () => {
-		const churn = createChurnTimer()
+		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
@@ -801,8 +754,8 @@ describe('self-heal: consumer-side stream close (no signal abort) tears down on 
 		expect(response.status).toBe(200)
 		expect(manager.emitter.count('pending')).toBe(baselinePending + 1)
 		expect(manager.emitter.count('expire')).toBe(baselineExpire + 1)
-		expect(churn.armedCount).toBe(1)
-		expect(churn.cancelledCount).toBe(0)
+		expect(churn.armed).toBe(1)
+		expect(churn.cancelled).toBe(0)
 
 		// Close the stream from the CONSUMER side — cancel the reader — WITHOUT ever aborting
 		// the request signal, simulating a disconnect the abort listener misses entirely.
@@ -815,12 +768,12 @@ describe('self-heal: consumer-side stream close (no signal abort) tears down on 
 
 		expect(manager.emitter.count('pending')).toBe(baselinePending)
 		expect(manager.emitter.count('expire')).toBe(baselineExpire)
-		expect(churn.cancelledCount).toBe(churn.armedCount)
+		expect(churn.cancelled).toBe(churn.armed)
 		expect(controller.signal.aborted).toBe(false)
 	})
 
 	it('a keepalive tick on a closed-but-not-aborted stream self-heals instead of re-arming', async () => {
-		const churn = createChurnTimer()
+		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
@@ -841,12 +794,12 @@ describe('self-heal: consumer-side stream close (no signal abort) tears down on 
 		churn.fire(0)
 
 		expect(manager.emitter.count('pending')).toBe(baselinePending)
-		expect(churn.armedCount).toBe(1)
+		expect(churn.armed).toBe(1)
 		expect(controller.signal.aborted).toBe(false)
 	})
 
 	it('double-teardown through both paths — self-heal first, then a later signal abort — stays clean and does not throw', async () => {
-		const churn = createChurnTimer()
+		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
@@ -875,7 +828,7 @@ describe('self-heal: consumer-side stream close (no signal abort) tears down on 
 
 		expect(manager.emitter.count('pending')).toBe(baselinePending)
 		expect(manager.emitter.count('expire')).toBe(baselineExpire)
-		expect(churn.cancelledCount).toBe(churn.armedCount)
+		expect(churn.cancelled).toBe(churn.armed)
 
 		// The request signal aborts AFTER self-heal already tore everything down. Since teardown
 		// removed its own `abort` listener during the self-heal pass, this abort should be a

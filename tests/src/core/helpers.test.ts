@@ -423,7 +423,9 @@ describe('expandTables — compile a TableSpec into a @orkestrel/database Tables
 				columns: { name: 'string', count: 'integer', weight: 'number', active: 'boolean' },
 			},
 		})
-		const contract = createContract(objectShape(tables.widgets))
+		const widgets = tables.widgets
+		if (widgets === undefined) throw new Error('expected widgets table')
+		const contract = createContract(objectShape(widgets))
 		expect(contract.is({ name: 'w', count: 1, weight: 1.5, active: true })).toBe(true)
 		expect(contract.is({ name: 42, count: 1, weight: 1.5, active: true })).toBe(false)
 		expect(contract.is({ name: 'w', count: 1.5, weight: 1.5, active: true })).toBe(false)
@@ -435,7 +437,9 @@ describe('expandTables — compile a TableSpec into a @orkestrel/database Tables
 		const tables = expandTables({
 			widgets: { columns: { nickname: { type: 'string', optional: true } } },
 		})
-		const contract = createContract(objectShape(tables.widgets))
+		const widgets = tables.widgets
+		if (widgets === undefined) throw new Error('expected widgets table')
+		const contract = createContract(objectShape(widgets))
 		expect(contract.is({})).toBe(true)
 		expect(contract.is({ nickname: 'w' })).toBe(true)
 		expect(contract.is({ nickname: 42 })).toBe(false)
@@ -447,8 +451,11 @@ describe('expandTables — compile a TableSpec into a @orkestrel/database Tables
 			b: { columns: { y: 'integer' } },
 		})
 		expect(Object.keys(tables).sort()).toEqual(['a', 'b'])
-		expect(createContract(objectShape(tables.a)).is({ x: 's' })).toBe(true)
-		expect(createContract(objectShape(tables.b)).is({ y: 1 })).toBe(true)
+		const a = tables.a
+		const b = tables.b
+		if (a === undefined || b === undefined) throw new Error('expected both tables')
+		expect(createContract(objectShape(a)).is({ x: 's' })).toBe(true)
+		expect(createContract(objectShape(b)).is({ y: 1 })).toBe(true)
 	})
 })
 

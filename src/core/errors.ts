@@ -45,7 +45,7 @@ import type { AgentToolErrorCode } from './types.js'
  */
 export class AgentToolError extends Error {
 	readonly code: AgentToolErrorCode
-	readonly context?: Readonly<Record<string, unknown>>
+	declare readonly context?: Readonly<Record<string, unknown>>
 
 	constructor(
 		code: AgentToolErrorCode,
@@ -55,7 +55,7 @@ export class AgentToolError extends Error {
 		super(message)
 		this.name = 'AgentToolError'
 		this.code = code
-		this.context = context
+		if (context !== undefined) this.context = context
 	}
 }
 

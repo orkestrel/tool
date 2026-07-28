@@ -41,6 +41,17 @@ Concrete `DefinitionStoreInterface` implementations (AGENTS §5 — Stores, poin
 | `MemoryDefinitionStore`   | class | The in-memory `DefinitionStoreInterface` — a process-lifetime `Map` of `DatabaseDefinition`s keyed by id; no idle-TTL, no eviction.                           |
 | `DatabaseDefinitionStore` | class | The `DefinitionStoreInterface` backed by one `@orkestrel/database` `TableInterface` — the definition stored as one opaque JSON column (`{ id, definition }`). |
 
+### Lifecycle entities
+
+These implementation classes are available when consumers need direct lifecycle composition.
+The factories `createDatabaseTool` and `createTerminalRoutes` remain the compact entry points.
+
+| API                  | Kind  | Summary                                                                                                                                           |
+| -------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DatabaseResolver`   | class | Resolve and cache a database handle from the tool's live handles, stored definitions, driver registry, and key function.                          |
+| `TerminalRoutes`     | class | Own the shared terminal-route options and bound GET/POST handlers projected by `createTerminalRoutes`.                                            |
+| `TerminalConnection` | class | Own one SSE connection's replay, listener subscriptions, keepalive revalidation, self-healing teardown, and exact optional wire-id serialization. |
+
 ### Errors
 
 | API                | Kind     | Summary                                                                                                                                                                                                                                                                                                                       |
@@ -195,7 +206,7 @@ The wire bridge for a `TerminalManagerInterface` — a GET SSE stream + a POST a
 | `Method`                | type      | The HTTP method literal a `TerminalRoute` declares — the exact 7-literal union `@orkestrel/router`'s `Method` accepts.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `TerminalRouteContext`  | interface | `{ params }` — the minimal route-dispatch context a `TerminalRoute` handler reads (the frozen, URL-decoded `:name` path param).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `TerminalRoute`         | interface | `{ method, path, handler }` — one structural route record `createTerminalRoutes` returns.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| `TerminalRoutesOptions` | interface | `{ path?, token?, keepalive?, timer?, limit? }` — the shared mount path, optional `TerminalToken` gate, SSE keepalive interval, injected `TimerHandler`, and POST body byte cap (defaults to `@orkestrel/server`'s `DEFAULT_BODY_LIMIT`, 1 MiB; over it is `413`, ignoring any `Content-Length` header).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `TerminalRoutesOptions` | interface | `{ path?, token?, keepalive?, timer?, limit? }` — the shared mount path, optional `TerminalToken` gate, SSE keepalive interval, injected `TimerHandler`, and POST body byte cap (defaults to `@orkestrel/server`'s `DEFAULT_BODY_LIMIT`, 1 MiB; a non-finite limit also defaults, a negative limit clamps to zero, and over-limit input is `413`, ignoring any `Content-Length` header).                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `TerminalToken`         | type      | `string \| ((value: string \| undefined) => boolean)` — the `token` gate: a string is compared for equality against the `x-orkestrel-token` header; a function is a consumer-controlled validator (JWT `exp` checks, revocation lookups, anything time-varying), letting a token expire or rotate mid-stream. Validated at GET connect, on every POST, and RE-VALIDATED on every SSE keepalive tick — a stream whose presented token stops validating is torn down through the same abort/self-heal teardown path (no `shutdown` frame; the client reconnects and re-authenticates). Because re-validation only happens on the keepalive tick, the revocation window equals the keepalive interval — a rejected/expired token keeps streaming until the next tick — and a throwing validator is treated as rejection (fail-closed) at every call site. |
 | `TERMINAL_ROUTES_PATH`  | const     | The default `:name`-templated path (`/terminals/:name`) `createTerminalRoutes` mounts its routes under.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `TERMINAL_KEEPALIVE_MS` | const     | The default SSE keepalive interval in milliseconds (`15_000`) `createTerminalRoutes` arms per open connection.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -206,7 +217,7 @@ The wire bridge for a `TerminalManagerInterface` — a GET SSE stream + a POST a
 
 ## Methods
 
-Every `create*Tool` factory returns a plain `ToolInterface` (`@orkestrel/agent`'s own type — its method surface is documented in [`agent.md`](agent.md), not re-documented here), and `createAgentFunction` / `createToolFunction` return a plain `WorkflowFunction` (`@orkestrel/workflow`'s own type — see [`workflow.md`](workflow.md)). The `WorkspaceManagerInterface` / `WorkflowRunnerInterface` / `AgentRegistryInterface` a caller supplies are likewise defined and documented upstream. The one behavioral interface with implementing classes IN this package is `DefinitionStoreInterface` — the point-access persistence seam `MemoryDefinitionStore` / `DatabaseDefinitionStore` implement.
+Every `create*Tool` factory returns a plain `ToolInterface` (`@orkestrel/agent`'s own type — its method surface is documented in [`agent.md`](agent.md), not re-documented here), and `createAgentFunction` / `createToolFunction` return a plain `WorkflowFunction` (`@orkestrel/workflow`'s own type — see [`workflow.md`](workflow.md)). The `WorkspaceManagerInterface` / `WorkflowRunnerInterface` / `AgentRegistryInterface` a caller supplies are likewise defined and documented upstream. `DefinitionStoreInterface` is the point-access persistence seam `MemoryDefinitionStore` / `DatabaseDefinitionStore` implement; the lifecycle classes expose their minimal orchestration methods directly.
 
 #### `DefinitionStoreInterface`
 
@@ -215,6 +226,76 @@ Every `create*Tool` factory returns a plain `ToolInterface` (`@orkestrel/agent`'
 | `get`    | `Promise<DatabaseDefinition \| undefined>` | Resolve the persisted definition for `id`, or `undefined` if none is stored. |
 | `set`    | `Promise<void>`                            | Insert / replace under the definition's OWN `id` (no separate id param).     |
 | `delete` | `Promise<void>`                            | Drop the definition for `id`; an absent id is a no-op (never throws).        |
+
+#### `DatabaseResolver`
+
+| Method    | Returns                          | Behavior                                                                |
+| --------- | -------------------------------- | ----------------------------------------------------------------------- |
+| `has`     | `boolean`                        | Report whether a live database is cached by id.                         |
+| `get`     | `DatabaseInterface \| undefined` | Read a cached database without consulting the definition store.         |
+| `set`     | `void`                           | Cache a live database by id.                                            |
+| `delete`  | `void`                           | Remove a cached live database by id.                                    |
+| `resolve` | `Promise<DatabaseInterface>`     | Return a cached live database, or construct one from its stored config. |
+
+#### `TerminalRoutes`
+
+| Method   | Returns                    | Behavior                                                    |
+| -------- | -------------------------- | ----------------------------------------------------------- |
+| `routes` | `readonly TerminalRoute[]` | Project the bound GET stream and POST answer route records. |
+
+#### `TerminalConnection`
+
+| Method | Returns    | Behavior                                                                 |
+| ------ | ---------- | ------------------------------------------------------------------------ |
+| `open` | `Response` | Replay pending prompts, subscribe to live events, and arm the keepalive. |
+
+### Composing lifecycle entities directly
+
+```ts
+import type { DatabaseInterface } from '@orkestrel/database'
+import type { DefinitionStoreInterface } from '@orkestrel/tool'
+import { createMemoryDriver, generateUUID } from '@orkestrel/database'
+import { DatabaseResolver } from '@orkestrel/tool'
+
+declare const database: DatabaseInterface
+declare const store: DefinitionStoreInterface
+
+const resolver = new DatabaseResolver(
+	new Map(),
+	{ memory: createMemoryDriver },
+	generateUUID,
+	store,
+)
+resolver.has('shop')
+resolver.set('shop', database)
+resolver.get('shop')
+resolver.delete('shop')
+await resolver.resolve('shop')
+```
+
+```ts
+import type { StreamInterface } from '@orkestrel/server'
+import type { TerminalManagerInterface, TimerHandler } from '@orkestrel/terminal'
+import { TerminalConnection, TerminalRoutes } from '@orkestrel/tool/server'
+
+declare const manager: TerminalManagerInterface
+declare const request: Request
+declare const stream: StreamInterface
+declare const accepts: (presented: string | undefined) => boolean
+declare const timer: TimerHandler
+
+new TerminalRoutes(manager).routes()
+const connection = new TerminalConnection(
+	manager,
+	'assistant',
+	request,
+	stream,
+	accepts,
+	timer,
+	15_000,
+)
+connection.open()
+```
 
 ## Contract
 
@@ -846,11 +927,13 @@ const result = await tools.execute({
 
 - [`tests/guides/src/parity.test.ts`](../../tests/guides/src/parity.test.ts) — the `## Surface` ↔ `src/core` + `src/server` bijection (value + type exports, spanning both barrels), and this guide's `## Patterns` fences resolving to real exports (per-specifier) with resolving imports.
 - [`tests/src/core/factories.test.ts`](../../tests/src/core/factories.test.ts) — every factory returning a working instance / value: `createToolFunction` running a registered tool and re-throwing a failing tool's error with the original message as `cause`; `createAgentFunction` running a live (scripted) agent, folding task cancellation into `agent.abort`, and — when `options.runner` is supplied — binding a depth/cycle-aware `createWorkflowTool` onto the agent's `context.tools` under `WORKFLOW_TOOL_NAME`, plus its own `DEPTH` guard rejecting an over-deep / cyclic call before running the agent; `createWorkflowDraftContract` round-tripping a lenient draft (`id`/`name` optional, an explicit empty `id` still rejected); `createWorkflowTool` end to end through a REAL `createToolManager` — the flat shape, an ids-omitted draft, and the full nested form all converging on `{ status, count }`, a malformed blob throwing `TOOL`, an over-deep / cyclic nested run throwing `DEPTH`, and (with `options.store` supplied) the settled run's snapshot landing in the store; `createWorkspaceTool` driven both `manager`-first and `store`-first, one case per operation arm (incl. the no-active auto-create / empty-read rule and the `workspaces` / `switch` registry arms), and its `WorkspaceError` propagation (`MODALITY` / `PATTERN` / `RANGE` uncaught, `TOOL` on a malformed op); `createAgentTool` resolving a seeded sub-agent via a (scripted) `AgentRegistryInterface`, returning its settled content, its `TOOL` failure paths (malformed call, unresolved provider), its `DEPTH` guard (over-depth, a cyclic re-entrant provider), and — net-new — its optional `store` slot: a successful delegation persisting the sub-agent's conversation snapshot, two delegations persisting two distinct snapshots, the storeless path unchanged, and a `store.set` failure surfacing as the tool call's own failure via the manager's error envelope; the three tools' advertised `summary` (exact text, alongside an unchanged full `description`) and a real `ToolManager.definitions()` advertising the summary while `tool(name).description` keeps the full text; `createDescribeTool` returning each of the three tools' full description through a real `ToolManager`, an unknown name throwing a typed `TOOL` `AgentToolError` (via both a direct call and the manager's error envelope), and malformed args (missing/empty `name`) rejected; `createPromptTool` / `createAnswerTool` driven through a real `TerminalManagerInterface` / `ToolManager` — asking + blocking until answered, listing pending prompts, coercing the answer to the prompt's form, a prompt cycle throwing `DEADLOCK`, an expired prompt throwing `EXPIRE`, and an unknown/rejected answer throwing `ANSWER`; `createMemoryDefinitionStore` / `createDatabaseDefinitionStore` each returning a working `DefinitionStoreInterface` (a `set`/`get`/`delete` round trip); `createDatabaseTool` driven through a REAL `createToolManager` across every operation (`create`/`tables`/`get`/`records`/`count`/`aggregate`/`add`/`set`/`update`/`remove`/`migrate`/`destroy`), the single/array `key` overload on `get`/`add`/`set`/`update`/`remove`, `'records'` truncation against `limit` (with `criteria.limit` clamped, never raised, past the configured cap), `'migrate'` re-declaring a live handle against its own deployed schema, lazy `store`-backed resolution of an uncached id (an unknown id throwing `TOOL`), `readonly` gating every mutating operation, and a `DatabaseError` re-surfacing as a typed `DATABASE` `AgentToolError` carrying `context.code`; `createRelationTool` driven the same way across `load`/`find`/`link`/`unlink`/`links`, `manager` resolution (an explicit miss, an omitted one against zero/one/many registered managers), `include` dot-path expansion + depth-cap rejection, `'find'`/`'links'` truncation, and a `RelationError` / underlying `DatabaseError` each re-surfacing as typed `RELATION` / `DATABASE` `AgentToolError`s.
+- [`tests/src/core/databases/DatabaseResolver.test.ts`](../../tests/src/core/databases/DatabaseResolver.test.ts) — caller-map isolation, explicit cache operations, stored-definition construction and reuse, and the typed unknown-database failure.
 - [`tests/src/core/helpers.test.ts`](../../tests/src/core/helpers.test.ts) — `workflowTag` / `agentTag`'s namespaced tags; `workflowToolSummary`'s plain `{ status, count }` reduction; the lenient-authoring synthesis `completeDraft` / `completePhaseDraft` / `completeTaskDraft` (positional ids, name defaulting to id, a provided id/name preserved, per-phase `bail` + per-task `retries`/`timeout` carried over) and `expandSteps` (one one-task phase per step, a step's `name` → the task's `run`), each yielding a tree the STRICT `createWorkflowContract` accepts; `coerceAnswer` per form (`confirm` → `boolean`, `checkbox` → `readonly string[]`, text forms → `string`, including a lossless-string fallback for an object/array value); `terminalToolCode` mapping `TerminalError('DEADLOCK'|'EXPIRE')` 1:1, every other `TerminalError` to `TOOL`, and a non-`TerminalError` to `undefined`; `isColumnKind` / `isColumnSpec` narrowing valid and invalid column specs; `expandTables` / `columnShape` / `kindShape` compiling every `ColumnKind` (+ `optional`) into the matching `@orkestrel/database` shape; `isDatabaseDefinition` narrowing a valid definition and rejecting malformed `tables` / `keys`; `databaseToolCode` / `relationToolCode` mapping every `DatabaseErrorCode` / `RelationErrorCode` 1:1 and a non-matching error to `undefined`; `expandInclude` merging dot-paths (a longer path subsuming a shorter sibling's bare `true`) and rejecting an empty segment / over-depth path with a typed `TOOL` error; `relationManagerOf` / `relationModelOf` resolving an explicit/omitted name and throwing typed `TOOL` on a miss; `criteriaOf` defaulting an omitted `connector` to `'and'`; `clampCriteria` bumping the probe `limit` by one and flooring the effective limit at `0`; `columnSchema` / `tableSchema` building a `TableSchema` from a live handle's `export()`.
 - [`tests/src/core/shapers.test.ts`](../../tests/src/core/shapers.test.ts) — `agentToolShape` agreeing with `AgentToolArguments` (`task` required, `provider`/`tools`/`system` optional); the draft shapes (`workflowDraftShape` / `phaseDraftShape` / `taskDraftShape`); `stepShape` / `workflowStepsShape`; `workspaceToolShape` accepting a valid sample of each of the 13 operation arms and rejecting malformed input; `promptToolShape` accepting each of the six prompt forms' fields and rejecting malformed input; `answerToolShape` accepting both the `pending` and `answer` arms (each `value` type) and rejecting malformed input; `databaseToolShape` accepting a valid sample of each of the 12 operation arms (incl. the single/array `key` and `row` forms) and rejecting malformed input; `relationToolShape` accepting a valid sample of each of the 5 operation arms (incl. `manager` omitted, single/array `key`) and rejecting malformed input.
 - [`tests/src/core/errors.test.ts`](../../tests/src/core/errors.test.ts) — `AgentToolError` carrying its `code` + optional `context`, and `isAgentToolError` narrowing a caught value (accepting a real instance, rejecting a plain `Error` / non-error value).
 - [`tests/src/core/stores.test.ts`](../../tests/src/core/stores.test.ts) — `MemoryDefinitionStore` and `DatabaseDefinitionStore` run against the SAME scenario set to pin identical `DefinitionStoreInterface` behavior: `set` inserting / replacing under the definition's own `id`, `get` resolving a stored definition or `undefined`, `delete` removing an entry and a no-op on an absent id; `DatabaseDefinitionStore`-only scenarios — a malformed blob written directly into the backing table resolving `undefined` via `isDatabaseDefinition` rather than throwing, and construction over a custom (non-default) `DriverInterface`.
 - [`tests/src/server/factories.test.ts`](../../tests/src/server/factories.test.ts) — `createTerminalRoutes` returning exactly two records (GET then POST) sharing one path; the GET route replaying every currently-pending prompt as a `pending` frame then live-forwarding `pending` / `expire` events scoped to `name`, arming a keepalive `: ` comment ping via an injected `timer` that RE-VALIDATES the connection's presented token on every tick (a `TerminalToken` function that starts rejecting mid-stream tears the stream down through the shared teardown and does not re-arm; a static string token is a no-op across ticks), ending the stream (unsubscribing + cancelling the keepalive) on the request's `AbortSignal` firing, and `401`/`404` on a token mismatch / unknown `name`; the POST route reading the body capped at `options.limit` bytes and parsing the JSON body and routing it through `manager.answer` — `204` on success, `413` an over-limit body (a lying small `Content-Length` on a big streamed body still capped, `manager.answer` never called), `400` invalid JSON, `422` a non-`{ id, value }` body or a `'unknown'`/`'rejected'` answer result, `404` an unknown `name` or a `'terminal'` answer result, `401` on a token mismatch; mount-churn pressure (50 sequential GET connect→abort cycles) proving zero leaked keepalive timers / manager listener subscriptions and no ghost duplicate `pending` frames; POST fuzz pressure over malformed/invalid-shape bodies, unknown endpoint, bad token, and an expired id; and consumer-side stream-close self-heal — a live `pending` event or a keepalive tick arriving on a stream closed WITHOUT the request `AbortSignal` ever firing runs the SAME teardown the abort path runs (listeners detached, keepalive cancelled), never re-arming or leaking.
+- [`tests/src/server/routes/TerminalConnection.test.ts`](../../tests/src/server/routes/TerminalConnection.test.ts) — idempotent direct opening, already-aborted request teardown, and fail-closed handling when a direct token validator throws.
 
 ## See also
 

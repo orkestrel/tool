@@ -404,22 +404,42 @@ export function relationToolCode(error: unknown): RelationErrorCode | undefined 
  * ```
  */
 export function expandInclude(paths: readonly string[] | undefined, depth: number): Include {
-	function merge(base: Include, segments: readonly string[]): Include {
-		const [head, ...rest] = segments
-		const existing = base[head]
-		if (rest.length === 0) {
-			return { ...base, [head]: existing === undefined ? true : existing }
-		}
-		const nextBase: Include = typeof existing === 'object' ? existing : {}
-		return { ...base, [head]: merge(nextBase, rest) }
-	}
 	let include: Include = {}
 	for (const path of paths ?? []) {
 		const segments = path.split('.')
 		if (segments.length > depth || segments.some((segment) => segment.length === 0)) {
 			throw new AgentToolError('TOOL', `malformed include path '${path}'`, { path, depth })
 		}
-		include = merge(include, segments)
+		const ancestors: Include[] = []
+		let branch = include
+		const last = segments.length - 1
+		for (let index = 0; index < last; index++) {
+			const segment = segments[index]
+			if (segment === undefined) {
+				throw new AgentToolError('TOOL', `malformed include path '${path}'`, { path, depth })
+			}
+			ancestors.push(branch)
+			const existing = branch[segment]
+			branch = typeof existing === 'object' ? existing : {}
+		}
+		const leaf = segments[last]
+		if (leaf === undefined) {
+			throw new AgentToolError('TOOL', `malformed include path '${path}'`, { path, depth })
+		}
+		const existing = branch[leaf]
+		let merged: Include = {
+			...branch,
+			[leaf]: existing === undefined ? true : existing,
+		}
+		for (let index = last - 1; index >= 0; index--) {
+			const ancestor = ancestors[index]
+			const segment = segments[index]
+			if (ancestor === undefined || segment === undefined) {
+				throw new AgentToolError('TOOL', `malformed include path '${path}'`, { path, depth })
+			}
+			merged = { ...ancestor, [segment]: merged }
+		}
+		include = merged
 	}
 	return include
 }
@@ -453,7 +473,11 @@ export function relationManagerOf(
 		return manager
 	}
 	const names = Object.keys(managers)
-	if (names.length === 1) return managers[names[0]]
+	const [single] = names
+	if (names.length === 1 && single !== undefined) {
+		const manager = managers[single]
+		if (manager !== undefined) return manager
+	}
 	throw new AgentToolError('TOOL', 'no relation manager resolved for the call', {
 		managers: names,
 	})

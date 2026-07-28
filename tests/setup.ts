@@ -4,7 +4,22 @@ import type {
 	ProviderInterface,
 	ProviderResult,
 } from '@orkestrel/agent'
+import type { DatabaseInterface } from '@orkestrel/database'
 import { ProviderAbortError } from '@orkestrel/agent'
+import { createDatabase, createMemoryDriver, generateUUID } from '@orkestrel/database'
+
+/**
+ * Create an empty live memory database for core integration tests.
+ *
+ * @returns A live database backed by the real memory driver
+ */
+export function createTestDatabase(): DatabaseInterface {
+	return createDatabase({
+		driver: createMemoryDriver(),
+		tables: {},
+		key: generateUUID,
+	})
+}
 
 /**
  * Resolve after `ms` milliseconds — the single shared delay helper (AGENTS §16.1),
@@ -206,4 +221,10 @@ export function createScriptedProvider(
 			return step.value
 		},
 	}
+}
+
+/** Whether a repository-relative Vue SFC path belongs to the private browser application. */
+export function isBrowserVuePath(path: string): boolean {
+	const normalized = path.replaceAll('\\', '/')
+	return normalized.startsWith('app/browser/')
 }

@@ -53,6 +53,7 @@ import { createDatabase, createMemoryDriver, generateUUID } from '@orkestrel/dat
 import { createWorkflowContract, WorkflowError } from '@orkestrel/workflow'
 import { MemoryDefinitionStore } from './stores/MemoryDefinitionStore.js'
 import { DatabaseDefinitionStore } from './stores/DatabaseDefinitionStore.js'
+import { DatabaseResolver } from './databases/DatabaseResolver.js'
 import {
 	AGENT_TOOL_DEPTH,
 	AGENT_TOOL_DESCRIPTION,
@@ -260,7 +261,11 @@ export function createAgentFunction(
 		// agent up front; otherwise a one-shot listener fires `agent.abort(reason)` when the task
 		// cancels. `generate()` RESOLVES a partial on a cancel (never rejects).
 		const signal = controller.signal
-		const onAbort = (): void => agent.abort(signal.reason)
+		const onAbort = {
+			handleEvent(): void {
+				agent.abort(signal.reason)
+			},
+		}
 		if (signal.aborted) {
 			agent.abort(signal.reason)
 		} else {
@@ -379,8 +384,8 @@ export function createWorkflowTool(
 		name: WORKFLOW_TOOL_NAME,
 		description: WORKFLOW_TOOL_DESCRIPTION,
 		summary: WORKFLOW_TOOL_SUMMARY,
-		parameters,
-		execute: async (args) => {
+		...(parameters === undefined ? {} : { parameters }),
+		async execute(args) {
 			// Branch on the authored args' SHAPE (no ambient context — a tool handler gets only
 			// `args`): empty ⇒ the wrapped definition; a `steps` array ⇒ the FLAT form, parsed +
 			// expanded; otherwise the nested DRAFT form, parsed + completed. A parse failure leaves
@@ -486,8 +491,8 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 		name: options?.name ?? WORKSPACE_TOOL_NAME,
 		description: options?.description ?? WORKSPACE_TOOL_DESCRIPTION,
 		summary: WORKSPACE_TOOL_SUMMARY,
-		parameters,
-		execute: (args) => {
+		...(parameters === undefined ? {} : { parameters }),
+		execute(args) {
 			const op = contract.parse(args)
 			if (op === undefined) {
 				throw new WorkspaceError('TOOL', `unknown or malformed operation`, { args })
@@ -527,14 +532,18 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 					return active?.has(op.path) ?? false
 				case 'search':
 					return (
-						active?.search(op.query, { regex: op.regex, exact: op.exact, limit: op.limit }) ?? []
+						active?.search(op.query, {
+							...(op.regex === undefined ? {} : { regex: op.regex }),
+							...(op.exact === undefined ? {} : { exact: op.exact }),
+							...(op.limit === undefined ? {} : { limit: op.limit }),
+						}) ?? []
 					)
 				case 'replace': {
 					const workspace = active ?? manager.add()
 					return workspace.replace(op.query, op.replacement, {
-						regex: op.regex,
-						exact: op.exact,
-						limit: op.limit,
+						...(op.regex === undefined ? {} : { regex: op.regex }),
+						...(op.exact === undefined ? {} : { exact: op.exact }),
+						...(op.limit === undefined ? {} : { limit: op.limit }),
 					})
 				}
 				case 'write': {
@@ -624,8 +633,8 @@ export function createAgentTool(
 		name: options?.name ?? AGENT_TOOL_NAME,
 		description: options?.description ?? AGENT_TOOL_DESCRIPTION,
 		summary: AGENT_TOOL_SUMMARY,
-		parameters,
-		execute: async (args) => {
+		...(parameters === undefined ? {} : { parameters }),
+		async execute(args) {
 			const call = contract.parse(args)
 			if (call === undefined) {
 				throw new AgentToolError('TOOL', 'malformed agent-delegation call', { args })
@@ -713,8 +722,8 @@ export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
 		name: DESCRIBE_TOOL_NAME,
 		description: DESCRIBE_TOOL_DESCRIPTION,
 		summary: DESCRIBE_TOOL_SUMMARY,
-		parameters,
-		execute: async (args) => {
+		...(parameters === undefined ? {} : { parameters }),
+		async execute(args) {
 			const call = contract.parse(args)
 			if (call === undefined) {
 				throw new AgentToolError('TOOL', 'malformed describe call', { args })
@@ -769,8 +778,8 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
 		name: options.name ?? PROMPT_TOOL_NAME,
 		description: options.description ?? PROMPT_TOOL_DESCRIPTION,
 		summary: PROMPT_TOOL_SUMMARY,
-		parameters,
-		execute: async (args) => {
+		...(parameters === undefined ? {} : { parameters }),
+		async execute(args) {
 			const call = contract.parse(args)
 			if (call === undefined) {
 				throw new AgentToolError('TOOL', 'malformed ask call', { args })
@@ -898,8 +907,8 @@ export function createAnswerTool(options: AnswerToolOptions): ToolInterface {
 		name: options.name ?? ANSWER_TOOL_NAME,
 		description: options.description ?? ANSWER_TOOL_DESCRIPTION,
 		summary: ANSWER_TOOL_SUMMARY,
-		parameters,
-		execute: async (args) => {
+		...(parameters === undefined ? {} : { parameters }),
+		async execute(args) {
 			const call = contract.parse(args)
 			if (call === undefined) {
 				throw new AgentToolError('TOOL', 'malformed answer call', { args })
@@ -1051,44 +1060,21 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 	const parameters = schemaToParameters(contract.schema)
 	const handles = new Map<string, DatabaseInterface>(Object.entries(options.databases ?? {}))
 	const definitions = new Map<string, DatabaseDefinition>()
-	const drivers = options.drivers ?? { memory: () => createMemoryDriver() }
+	const drivers = options.drivers ?? { memory: createMemoryDriver }
 	const key = options.key ?? generateUUID
 	const cap = options.limit ?? DATABASE_TOOL_LIMIT
 	const store = options.store
-
-	async function resolve(id: string): Promise<DatabaseInterface> {
-		const cached = handles.get(id)
-		if (cached !== undefined) return cached
-		if (store !== undefined) {
-			const definition = await store.get(id)
-			if (definition !== undefined) {
-				const factory = drivers[definition.driver]
-				if (factory === undefined) {
-					throw new AgentToolError('TOOL', `unknown driver '${definition.driver}'`, {
-						id,
-						driver: definition.driver,
-					})
-				}
-				const handle = createDatabase({
-					driver: factory(),
-					tables: expandTables(definition.tables),
-					...(definition.keys === undefined ? {} : { keys: definition.keys }),
-					key,
-				})
-				handles.set(id, handle)
-				definitions.set(id, definition)
-				return handle
-			}
-		}
-		throw new AgentToolError('TOOL', `unknown database '${id}'`, { id })
-	}
+	const resolver =
+		store === undefined
+			? new DatabaseResolver(handles, drivers, key)
+			: new DatabaseResolver(handles, drivers, key, store)
 
 	return createTool({
 		name: options.name ?? DATABASE_TOOL_NAME,
 		description: options.description ?? DATABASE_TOOL_DESCRIPTION,
 		summary: DATABASE_TOOL_SUMMARY,
-		parameters,
-		execute: async (args) => {
+		...(parameters === undefined ? {} : { parameters }),
+		async execute(args) {
 			const call = contract.parse(args)
 			if (call === undefined) {
 				throw new AgentToolError('TOOL', 'malformed database call', { args })
@@ -1106,7 +1092,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 				switch (call.operation) {
 					case 'create': {
 						if (
-							handles.has(call.id) ||
+							resolver.has(call.id) ||
 							(store !== undefined && (await store.get(call.id)) !== undefined)
 						) {
 							throw new AgentToolError('TOOL', `database '${call.id}' already exists`, {
@@ -1129,7 +1115,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 							...(keys === undefined ? {} : { keys }),
 							key,
 						})
-						handles.set(call.id, handle)
+						resolver.set(call.id, handle)
 						const definition: DatabaseDefinition = {
 							id: call.id,
 							driver: name,
@@ -1141,7 +1127,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						return { id: call.id, tables: Object.keys(tables) }
 					}
 					case 'tables': {
-						const handle = await resolve(call.id)
+						const handle = await resolver.resolve(call.id)
 						const tables = Object.keys(handle.export()).map((name) => {
 							const table = handle.table(name)
 							return { name, primary: table.primary, columns: table.contract.schema }
@@ -1149,7 +1135,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						return { tables }
 					}
 					case 'get': {
-						const handle = await resolve(call.id)
+						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
 						const many = Array.isArray(call.key)
 						const keys = Array.isArray(call.key) ? call.key : [call.key]
@@ -1157,7 +1143,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						return many ? { rows } : { row: rows[0] }
 					}
 					case 'records': {
-						const handle = await resolve(call.id)
+						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
 						const { criteria: probe, limit } = clampCriteria(criteriaOf(call.criteria), cap)
 						const rows = await table.records(probe, read)
@@ -1166,13 +1152,13 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						return { rows: sliced, count: sliced.length, truncated, limit }
 					}
 					case 'count': {
-						const handle = await resolve(call.id)
+						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
 						const count = await table.count(criteriaOf(call.criteria), read)
 						return { count }
 					}
 					case 'aggregate': {
-						const handle = await resolve(call.id)
+						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
 						const value = await table.aggregate(
 							call.function,
@@ -1183,7 +1169,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						return { value }
 					}
 					case 'add': {
-						const handle = await resolve(call.id)
+						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
 						const many = Array.isArray(call.row)
 						const rows = Array.isArray(call.row) ? call.row : [call.row]
@@ -1191,7 +1177,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						return many ? { keys } : { key: keys[0] }
 					}
 					case 'set': {
-						const handle = await resolve(call.id)
+						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
 						const many = Array.isArray(call.row)
 						const rows = Array.isArray(call.row) ? call.row : [call.row]
@@ -1199,7 +1185,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						return many ? { keys } : { key: keys[0] }
 					}
 					case 'update': {
-						const handle = await resolve(call.id)
+						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
 						const changes = call.changes
 						const many = Array.isArray(call.key)
@@ -1208,7 +1194,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						return many ? { updated } : { updated: updated[0] }
 					}
 					case 'remove': {
-						const handle = await resolve(call.id)
+						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
 						const many = Array.isArray(call.key)
 						const keys = Array.isArray(call.key) ? call.key : [call.key]
@@ -1216,7 +1202,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						return many ? { removed } : { removed: removed[0] }
 					}
 					case 'migrate': {
-						const handle = await resolve(call.id)
+						const handle = await resolver.resolve(call.id)
 						const previous = handle.export()
 						const deployed = Object.entries(previous).map(([name, table]) =>
 							tableSchema(name, table),
@@ -1233,8 +1219,10 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 							Object.keys(keys).length > 0 ? keys : undefined,
 						)
 						const migration = await migrated.migrate(deployed, read)
-						handles.set(call.id, migrated)
-						const tracked = definitions.get(call.id)
+						resolver.set(call.id, migrated)
+						const tracked =
+							definitions.get(call.id) ??
+							(store === undefined ? undefined : await store.get(call.id))
 						if (tracked !== undefined) {
 							const updated: DatabaseDefinition = {
 								id: call.id,
@@ -1248,14 +1236,14 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						return { migration }
 					}
 					case 'destroy': {
-						const cached = handles.get(call.id)
+						const cached = resolver.get(call.id)
 						const persisted =
 							store !== undefined && cached === undefined
 								? (await store.get(call.id)) !== undefined
 								: false
 						if (cached !== undefined) {
 							await cached.close()
-							handles.delete(call.id)
+							resolver.delete(call.id)
 						}
 						definitions.delete(call.id)
 						if (store !== undefined) await store.delete(call.id)
@@ -1339,8 +1327,8 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
 		name: options.name ?? RELATION_TOOL_NAME,
 		description: options.description ?? RELATION_TOOL_DESCRIPTION,
 		summary: RELATION_TOOL_SUMMARY,
-		parameters,
-		execute: async (args) => {
+		...(parameters === undefined ? {} : { parameters }),
+		async execute(args) {
 			const call = contract.parse(args)
 			if (call === undefined) {
 				throw new AgentToolError('TOOL', 'malformed relation call', { args })
@@ -1497,8 +1485,8 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
 		name: options?.name ?? INFER_TOOL_NAME,
 		description: options?.description ?? INFER_TOOL_DESCRIPTION,
 		summary: INFER_TOOL_SUMMARY,
-		parameters,
-		execute: async (args) => {
+		...(parameters === undefined ? {} : { parameters }),
+		async execute(args) {
 			const parsed = contract.parse(args)
 			if (parsed === undefined) {
 				throw new AgentToolError('TOOL', 'malformed infer arguments', { args })
@@ -1614,16 +1602,18 @@ export function createEndpointTool(
 		return createTool({
 			name: definition.name,
 			description: definition.description,
-			parameters,
-			execute: (args) => definition.invoke(args),
+			...(parameters === undefined ? {} : { parameters }),
+			execute(args) {
+				return definition.invoke(args)
+			},
 		})
 	}
 	const contract = createContract(schemaToShape(objectSchema))
 	return createTool({
 		name: definition.name,
 		description: definition.description,
-		parameters,
-		execute: (args) => {
+		...(parameters === undefined ? {} : { parameters }),
+		execute(args) {
 			const parsed = contract.parse(args)
 			if (parsed === undefined || !isRecord(parsed)) {
 				throw new AgentToolError('TOOL', 'malformed endpoint call arguments', {

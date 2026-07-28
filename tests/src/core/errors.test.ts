@@ -13,6 +13,7 @@ describe('AgentToolError', () => {
 		expect(error.message).toBe('task is required')
 		expect(error.code).toBe('TOOL')
 		expect(error.context).toBeUndefined()
+		expect(error).not.toHaveProperty('context')
 	})
 
 	it('carries an optional structured context bag', () => {
