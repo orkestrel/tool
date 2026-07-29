@@ -76,7 +76,7 @@
 		"prepublishOnly": "npm run format:check && npm run lint:check && npm run check && npm run build && npm test"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.9",
+		"@orkestrel/agent": "^0.0.11",
 		"@orkestrel/contract": "^0.0.8",
 		"@orkestrel/database": "^0.0.6",
 		"@orkestrel/relation": "^0.0.6",
@@ -87,7 +87,7 @@
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.58.12",
 		"@orkestrel/guide": "^0.0.7",
-		"@orkestrel/scaffold": "^0.0.7",
+		"@orkestrel/scaffold": "^0.0.10",
 		"@types/node": "^26.1.2",
 		"@vitest/browser-playwright": "^4.1.10",
 		"oxfmt": "^0.61.0",
