@@ -1,6 +1,8 @@
 # Guides
 
-A concept and directory index for the `@orkestrel/tool` runtime.
+The concept and directory index for the `@orkestrel/tool` runtime. One concept, one guide: the
+tool — JSON-Schema-described callable functions and the registry that advertises and executes
+them.
 
 ## By concept
 
@@ -16,15 +18,17 @@ A concept and directory index for the `@orkestrel/tool` runtime.
 
 ## Dependency reference
 
-[`src/contract.md`](src/contract.md) mirrors the guide for the runtime dependency
-`@orkestrel/contract`, whose total guards support the runtime's overload narrowing and
-tool-call validation.
+These mirror the guides of packages this repository consumes; they document those packages, not
+this one.
 
-[`src/guide.md`](src/guide.md) mirrors the guide for the development dependency
-`@orkestrel/guide`, which powers this repository's guide-parity tests.
+[`src/contract.md`](src/contract.md) — the runtime dependency `@orkestrel/contract`, whose total
+guards back the runtime's overload narrowing and tool-call validation.
 
-[`src/scaffold.md`](src/scaffold.md) mirrors the guide for the development dependency
-`@orkestrel/scaffold`, which maintains the repository scaffold.
+[`src/guide.md`](src/guide.md) — the development dependency `@orkestrel/guide`, which powers this
+repository's guide-parity tests.
+
+[`src/scaffold.md`](src/scaffold.md) — the development dependency `@orkestrel/scaffold`, which
+maintains the repository scaffold.
 
 ## See also
 
