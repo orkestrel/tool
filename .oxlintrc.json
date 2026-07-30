@@ -157,50 +157,6 @@
 			}
 		},
 		{
-			"files": ["src/server/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx,vue}"],
-			"rules": {
-				"no-restricted-imports": [
-					"error",
-					{
-						"patterns": [
-							{
-								"regex": "^(?:/|[A-Za-z]:[\\\\/])",
-								"message": "imports must not use machine-specific absolute paths"
-							},
-							{
-								"regex": "^(?!node:)[A-Za-z][A-Za-z0-9+.-]*:",
-								"message": "imports must not use non-Node URL schemes"
-							},
-							{
-								"regex": "(?:^|/)(?!\\.{1,2}(?:/|$))[^/]+/\\.{1,2}(?:/|$)",
-								"message": "internal import paths must not contain noncanonical dot segments"
-							},
-							{
-								"regex": "^(?:(?:\\./)+\\.\\.(?:/|$)|(?:\\.\\./)+(?:\\./)+)|//",
-								"message": "relative import paths must not contain normalized traversal segments"
-							},
-							{
-								"regex": "\\\\",
-								"message": "import paths must use portable forward slashes"
-							},
-							{
-								"regex": "^(?:@app(?:[/?#]|$)|(?:\\.\\./)+app(?:[/?#]|$))",
-								"message": "src environments must not depend on private app modules"
-							},
-							{
-								"regex": "\\.(?:css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:[?#]|$)",
-								"message": "src/server must not import browser stylesheets"
-							},
-							{
-								"regex": "^(?:(?:vue|vite)(?:[/?#]|$)|@(?:vue|vitejs)/|@src/browser(?:[/?#]|$)|@orkestrel/[^/]+/browser(?:[/?#]|$)|(?:\\.\\./)+(?:browser|src/browser|app/browser)(?:[/?#]|$))",
-								"message": "src/server must not depend on Vue or browser-only modules"
-							}
-						]
-					}
-				]
-			}
-		},
-		{
 			"files": ["app/core/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx,vue}"],
 			"rules": {
 				"no-restricted-imports": [

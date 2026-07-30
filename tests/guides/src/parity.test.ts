@@ -1,7 +1,4 @@
-// The consumer-side guides-parity drop-in (PROPOSAL §6): runs `@orkestrel/guide`'s
-// checks against this repo's own `guides/README.md` manifest — one row (Tool)
-// spanning the core/server faces as a multi-dir `GuideModule` (AGENTS §22 —
-// one guide per package).
+// Runs @orkestrel/guide parity checks against this package's core-only manifest.
 
 import { describe, expect, it } from 'vitest'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -22,7 +19,7 @@ import {
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 const WALK_DIRS = ['src', 'guides', 'tests']
-const SELF_SPECIFIERS = ['@orkestrel/tool', '@src/core', '@src/server']
+const SELF_SPECIFIERS = ['@orkestrel/tool', '@src/core']
 
 function walk(dir: string, acc: Record<string, string>): void {
 	for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
@@ -48,14 +45,9 @@ function readText(relative: string): string {
 
 const manifest = parseManifest(readText('guides/README.md'), 'guides')
 
-// Cross-face imports are real in this multi-face package (tool.md fences import
-// `createTerminalRoutes` from `@src/server` alongside core exports) — so the fence-import
-// check resolves each specifier to ITS OWN face's exports rather than only the current
-// manifest entry's, per the specifier → module map below.
 const SPECIFIER_MODULES: Readonly<Record<string, string>> = {
 	'@orkestrel/tool': 'src/core',
 	'@src/core': 'src/core',
-	'@src/server': 'src/server',
 }
 const specifierSources = new Map<string, ReturnType<typeof createSource>>()
 function exportsFor(specifier: string): readonly string[] {
