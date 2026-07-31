@@ -1,11 +1,11 @@
 /**
- * A tool definition advertised to a model.
+ * A tool definition advertised to a caller.
  *
  * @remarks
  * `parameters` is an open JSON Schema record describing the arguments the tool accepts.
  */
 export interface ToolDefinition {
-	/** The name the model uses to select the tool. */
+	/** The name a caller uses to select the tool. */
 	readonly name: string
 	/** A description of the tool's behavior. */
 	readonly description?: string
@@ -14,18 +14,18 @@ export interface ToolDefinition {
 }
 
 /**
- * A tool call emitted by a model.
+ * A tool call issued by a caller.
  *
  * @remarks
  * `id` correlates the call with its later {@link ToolResult}. `arguments` is the
- * model-supplied arguments record.
+ * caller-supplied arguments record.
  */
 export interface ToolCall {
 	/** The identifier that correlates this call with its result. */
 	readonly id: string
 	/** The name of the tool to execute. */
 	readonly name: string
-	/** The model-supplied arguments record. */
+	/** The caller-supplied arguments record. */
 	readonly arguments: Readonly<Record<string, unknown>>
 }
 
@@ -59,7 +59,7 @@ export interface ToolInterface extends ToolDefinition {
 	/**
 	 * Execute the tool.
 	 *
-	 * @param args - The model-supplied arguments record
+	 * @param args - The caller-supplied arguments record
 	 * @returns The tool's synchronous or asynchronous result
 	 */
 	execute(args: Readonly<Record<string, unknown>>): Promise<unknown> | unknown
@@ -69,12 +69,12 @@ export interface ToolInterface extends ToolDefinition {
  * Options for creating an executable tool.
  *
  * @remarks
- * `name` identifies the tool, `description` and `parameters` define what a provider
- * advertises to the model, `summary` optionally replaces the advertised description,
- * and `execute` handles the model-supplied arguments record.
+ * `name` identifies the tool, `description` and `parameters` define what is advertised
+ * to a caller, `summary` optionally replaces the advertised description, and `execute`
+ * handles the caller-supplied arguments record.
  */
 export interface ToolOptions {
-	/** The name the model uses to select the tool. */
+	/** The name a caller uses to select the tool. */
 	readonly name: string
 	/** The full description of the tool's behavior. */
 	readonly description?: string
@@ -126,7 +126,7 @@ export interface ToolManagerInterface {
 	 */
 	tools(): readonly ToolInterface[]
 	/**
-	 * List the definitions advertised to a model.
+	 * List the definitions advertised to a caller.
 	 *
 	 * @returns A new readonly array of tool definitions
 	 */
