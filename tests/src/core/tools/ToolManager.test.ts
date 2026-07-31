@@ -51,6 +51,7 @@ describe('ToolManager registry', () => {
 		await expect(manager.execute(createToolCall('a', {}, 'overwrite'))).resolves.toEqual({
 			id: 'overwrite',
 			name: 'a',
+			success: true,
 			value: 'new',
 		})
 	})
@@ -138,10 +139,11 @@ describe('ToolManager execution', () => {
 		await expect(manager.execute(createToolCall('add', { a: 2, b: 5 }, 'sync'))).resolves.toEqual({
 			id: 'sync',
 			name: 'add',
+			success: true,
 			value: 7,
 		})
 		await expect(manager.execute(createToolCall('echo', { text: 'ok' }, 'async'))).resolves.toEqual(
-			{ id: 'async', name: 'echo', value: 'ok' },
+			{ id: 'async', name: 'echo', success: true, value: 'ok' },
 		)
 	})
 
@@ -187,14 +189,17 @@ describe('ToolManager execution', () => {
 		])
 
 		expect(results).toEqual([
-			{ id: 'zero', name: 'zero', value: 0 },
-			{ id: 'empty', name: 'empty', value: '' },
-			{ id: 'false', name: 'false', value: false },
-			{ id: 'null', name: 'null', value: null },
-			{ id: 'void', name: 'void', value: undefined },
+			{ id: 'zero', name: 'zero', success: true, value: 0 },
+			{ id: 'empty', name: 'empty', success: true, value: '' },
+			{ id: 'false', name: 'false', success: true, value: false },
+			{ id: 'null', name: 'null', success: true, value: null },
+			{ id: 'void', name: 'void', success: true, value: undefined },
 		])
-		expect('value' in requireValue(results[4])).toBe(true)
-		expect('error' in requireValue(results[4])).toBe(false)
+		const result = requireValue(results[4])
+		expect(result.success).toBe(true)
+		const value = result.success ? result.value : 'unexpected failure'
+		expect('value' in result).toBe(true)
+		expect(value).toBeUndefined()
 	})
 
 	it('isolates synchronous throws and asynchronous rejections', async () => {
@@ -218,10 +223,13 @@ describe('ToolManager execution', () => {
 		])
 
 		expect(results).toEqual([
-			{ id: 'throw', name: 'throw', error: 'handler failed' },
-			{ id: 'reject', name: 'reject', error: 'async failed' },
+			{ id: 'throw', name: 'throw', success: false, error: 'handler failed' },
+			{ id: 'reject', name: 'reject', success: false, error: 'async failed' },
 		])
-		expect('value' in requireValue(results[0])).toBe(false)
+		const result = requireValue(results[0])
+		expect(result.success).toBe(false)
+		const error = result.success ? undefined : result.error
+		expect(error).toBe('handler failed')
 	})
 
 	it('uses messages from Error subclasses', async () => {
@@ -238,6 +246,7 @@ describe('ToolManager execution', () => {
 		await expect(manager.execute(createToolCall('type', {}, 'type'))).resolves.toEqual({
 			id: 'type',
 			name: 'type',
+			success: false,
 			error: 'wrong value',
 		})
 	})
@@ -286,11 +295,11 @@ describe('ToolManager execution', () => {
 		])
 
 		expect(results).toEqual([
-			{ id: 'string', name: 'string', error: 'text' },
-			{ id: 'number', name: 'number', error: '42' },
-			{ id: 'object', name: 'object', error: '[object Object]' },
-			{ id: 'null', name: 'null', error: 'null' },
-			{ id: 'undefined', name: 'undefined', error: 'undefined' },
+			{ id: 'string', name: 'string', success: false, error: 'text' },
+			{ id: 'number', name: 'number', success: false, error: '42' },
+			{ id: 'object', name: 'object', success: false, error: '[object Object]' },
+			{ id: 'null', name: 'null', success: false, error: 'null' },
+			{ id: 'undefined', name: 'undefined', success: false, error: 'undefined' },
 		])
 	})
 
@@ -313,6 +322,7 @@ describe('ToolManager execution', () => {
 		await expect(manager.execute(createToolCall('hostile', {}, 'hostile'))).resolves.toEqual({
 			id: 'hostile',
 			name: 'hostile',
+			success: false,
 			error: 'Unknown thrown value',
 		})
 	})
@@ -337,6 +347,7 @@ describe('ToolManager execution', () => {
 		await expect(manager.execute(createToolCall('hostile', {}, 'hostile'))).resolves.toEqual({
 			id: 'hostile',
 			name: 'hostile',
+			success: false,
 			error: 'Unknown thrown value',
 		})
 	})
@@ -356,6 +367,7 @@ describe('ToolManager execution', () => {
 		await expect(manager.execute(createToolCall('hostile', {}, 'hostile'))).resolves.toEqual({
 			id: 'hostile',
 			name: 'hostile',
+			success: false,
 			error: 'Unknown thrown value',
 		})
 	})
@@ -368,9 +380,30 @@ describe('ToolManager execution', () => {
 		expect(result).toEqual({
 			id: 'missing',
 			name: 'ghost',
+			success: false,
 			error: 'tool not found: ghost',
 		})
-		expect('value' in result).toBe(false)
+		expect(result.success).toBe(false)
+		const error = result.success ? undefined : result.error
+		expect(error).toBe('tool not found: ghost')
+	})
+
+	it('narrows success and failure results by their discriminant', async () => {
+		const manager = new ToolManager()
+		manager.add(new Tool({ name: 'void', execute: () => undefined }))
+
+		const results = await manager.execute([
+			createToolCall('void', {}, 'success'),
+			createToolCall('missing', {}, 'failure'),
+		])
+		expect(requireValue(results[0]).success).toBe(true)
+		expect(requireValue(results[1]).success).toBe(false)
+		const outcomes = results.map((result) => {
+			if (result.success) return result.value
+			return result.error
+		})
+
+		expect(outcomes).toEqual([undefined, 'tool not found: missing'])
 	})
 })
 
@@ -397,10 +430,22 @@ describe('ToolManager batch execution', () => {
 		])
 
 		expect(results).toEqual([
-			{ id: 'a', name: 'add', value: 2 },
-			{ id: 'b', name: 'boom', error: 'nope' },
-			{ id: 'c', name: 'ghost', error: 'tool not found: ghost' },
+			{ id: 'a', name: 'add', success: true, value: 2 },
+			{ id: 'b', name: 'boom', success: false, error: 'nope' },
+			{ id: 'c', name: 'ghost', success: false, error: 'tool not found: ghost' },
 		])
+		const success = requireValue(results[0])
+		const thrown = requireValue(results[1])
+		const missing = requireValue(results[2])
+		expect(success.success).toBe(true)
+		const value = success.success ? success.value : undefined
+		expect(value).toBe(2)
+		expect(thrown.success).toBe(false)
+		const thrownError = thrown.success ? undefined : thrown.error
+		expect(thrownError).toBe('nope')
+		expect(missing.success).toBe(false)
+		const missingError = missing.success ? undefined : missing.error
+		expect(missingError).toBe('tool not found: ghost')
 	})
 
 	it('fully resolves a success beside a hostile throw', async () => {
@@ -426,8 +471,13 @@ describe('ToolManager batch execution', () => {
 				createToolCall('ok', {}, 'succeeded'),
 			]),
 		).resolves.toEqual([
-			{ id: 'failed', name: 'hostile', error: 'Unknown thrown value' },
-			{ id: 'succeeded', name: 'ok', value: 'done' },
+			{
+				id: 'failed',
+				name: 'hostile',
+				success: false,
+				error: 'Unknown thrown value',
+			},
+			{ id: 'succeeded', name: 'ok', success: true, value: 'done' },
 		])
 	})
 
@@ -460,8 +510,8 @@ describe('ToolManager batch execution', () => {
 
 		expect(settled).toEqual(['fast', 'slow'])
 		expect(results).toEqual([
-			{ id: 'slow', name: 'slow', value: 'slow' },
-			{ id: 'fast', name: 'fast', value: 'fast' },
+			{ id: 'slow', name: 'slow', success: true, value: 'slow' },
+			{ id: 'fast', name: 'fast', success: true, value: 'fast' },
 		])
 	})
 
@@ -475,8 +525,8 @@ describe('ToolManager batch execution', () => {
 		])
 
 		expect(results).toEqual([
-			{ id: 'same', name: 'echo', value: 'first' },
-			{ id: 'same', name: 'echo', value: 'second' },
+			{ id: 'same', name: 'echo', success: true, value: 'first' },
+			{ id: 'same', name: 'echo', success: true, value: 'second' },
 		])
 	})
 
@@ -496,8 +546,13 @@ describe('ToolManager batch execution', () => {
 		const results = await manager.execute(calls)
 		expect(results).toHaveLength(200)
 		expect(results.every((result, index) => result.id === `id-${String(index)}`)).toBe(true)
-		expect(results[7]).toEqual({ id: 'id-7', name: 'square', value: 49 })
-		expect(results[199]).toEqual({ id: 'id-199', name: 'square', value: 39_601 })
+		expect(results[7]).toEqual({ id: 'id-7', name: 'square', success: true, value: 49 })
+		expect(results[199]).toEqual({
+			id: 'id-199',
+			name: 'square',
+			success: true,
+			value: 39_601,
+		})
 	})
 })
 
@@ -536,6 +591,7 @@ describe('ToolManager removal', () => {
 		await expect(manager.execute(createToolCall('a', {}, 'removed'))).resolves.toEqual({
 			id: 'removed',
 			name: 'a',
+			success: false,
 			error: 'tool not found: a',
 		})
 		manager.add(new Tool({ name: 'a', execute: () => 'new' }))
@@ -544,6 +600,7 @@ describe('ToolManager removal', () => {
 		await expect(manager.execute(createToolCall('a', {}, 'added'))).resolves.toEqual({
 			id: 'added',
 			name: 'a',
+			success: true,
 			value: 'new',
 		})
 	})
@@ -564,8 +621,8 @@ describe('ToolManager removal', () => {
 		await expect(
 			manager.execute([createToolCall('a', {}, 'a'), createToolCall('b', {}, 'b')]),
 		).resolves.toEqual([
-			{ id: 'a', name: 'a', error: 'tool not found: a' },
-			{ id: 'b', name: 'b', error: 'tool not found: b' },
+			{ id: 'a', name: 'a', success: false, error: 'tool not found: a' },
+			{ id: 'b', name: 'b', success: false, error: 'tool not found: b' },
 		])
 	})
 })

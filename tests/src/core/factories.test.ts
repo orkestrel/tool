@@ -21,7 +21,7 @@ describe('tool factories', () => {
 		manager.add(createTool({ name: 'echo', execute: (args) => args.value }))
 		await expect(
 			manager.execute(createToolCall('echo', { value: 'hello' }, 'factory')),
-		).resolves.toEqual({ id: 'factory', name: 'echo', value: 'hello' })
+		).resolves.toEqual({ id: 'factory', name: 'echo', success: true, value: 'hello' })
 	})
 
 	it('creates a registry that isolates and correlates mixed batches', async () => {
@@ -43,9 +43,14 @@ describe('tool factories', () => {
 				createToolCall('missing', {}, 'unknown'),
 			]),
 		).resolves.toEqual([
-			{ id: 'success', name: 'echo', value: 'hello' },
-			{ id: 'failure', name: 'boom', error: 'factory failed' },
-			{ id: 'unknown', name: 'missing', error: 'tool not found: missing' },
+			{ id: 'success', name: 'echo', success: true, value: 'hello' },
+			{ id: 'failure', name: 'boom', success: false, error: 'factory failed' },
+			{
+				id: 'unknown',
+				name: 'missing',
+				success: false,
+				error: 'tool not found: missing',
+			},
 		])
 	})
 })

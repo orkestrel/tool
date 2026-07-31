@@ -47,7 +47,11 @@ const result = await tools.execute({
 	name: 'add',
 	arguments: { left: 2, right: 3 },
 })
-result.value // 5 — or result.error, when the call failed
+if (result.success) {
+	result.value // 5
+} else {
+	result.error // the failure message
+}
 ```
 
 Handlers may be synchronous or asynchronous. An unknown name or a thrown handler becomes an

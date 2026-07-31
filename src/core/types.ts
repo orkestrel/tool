@@ -1,3 +1,5 @@
+import type { Failure, Success } from '@orkestrel/contract'
+
 /**
  * A tool definition advertised to a caller.
  *
@@ -30,21 +32,42 @@ export interface ToolCall {
 }
 
 /**
- * The outcome of executing a {@link ToolCall}.
+ * The successful outcome of executing a {@link ToolCall}.
  *
  * @remarks
- * A successful result carries `value`; a failed result carries `error`.
+ * `value` is whatever the handler returned — including `undefined`, `null`, `0`,
+ * `''`, or `false`. A present value never implies a meaningful one.
  */
-export interface ToolResult {
+export interface ToolSuccess extends Success<unknown> {
 	/** The identifier of the corresponding call. */
 	readonly id: string
 	/** The name of the called tool. */
 	readonly name: string
-	/** The successful return value. */
-	readonly value?: unknown
-	/** The failure message. */
-	readonly error?: string
 }
+
+/**
+ * The failed outcome of executing a {@link ToolCall}.
+ *
+ * @remarks
+ * `error` is the failure message: an unknown tool name, an `Error`'s message, or
+ * a String-converted throw. The registry carries no further structure. An
+ * in-process caller needing a typed error calls `tools.tool(name)`, then
+ * `tool.execute(args)` in its own `try`/`catch`.
+ */
+export interface ToolFailure extends Failure<string> {
+	/** The identifier of the corresponding call. */
+	readonly id: string
+	/** The name of the called tool. */
+	readonly name: string
+}
+
+/**
+ * The outcome of executing a {@link ToolCall}.
+ *
+ * @remarks
+ * Always a result and never a throw. Narrow on `success`.
+ */
+export type ToolResult = ToolSuccess | ToolFailure
 
 /**
  * An executable tool: its advertised definition plus its local handler.
@@ -127,6 +150,10 @@ export interface ToolManagerInterface {
 	tools(): readonly ToolInterface[]
 	/**
 	 * List the definitions advertised to a caller.
+	 *
+	 * The projected `description` is the tool's `summary` when one was authored,
+	 * advertised in place of the full description. The full text stays on the tool
+	 * for direct lookup.
 	 *
 	 * @returns A new readonly array of tool definitions
 	 */

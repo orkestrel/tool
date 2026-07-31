@@ -85,11 +85,16 @@ export class ToolManager implements ToolManagerInterface {
 	async #run(call: ToolCall): Promise<ToolResult> {
 		const tool = this.#tools.get(call.name)
 		if (tool === undefined) {
-			return { id: call.id, name: call.name, error: `tool not found: ${call.name}` }
+			return {
+				id: call.id,
+				name: call.name,
+				success: false,
+				error: `tool not found: ${call.name}`,
+			}
 		}
 		try {
 			const value = await tool.execute(call.arguments)
-			return { id: call.id, name: call.name, value }
+			return { id: call.id, name: call.name, success: true, value }
 		} catch (error) {
 			const message = attempt(() =>
 				error instanceof Error ? String(error.message) : String(error),
@@ -97,6 +102,7 @@ export class ToolManager implements ToolManagerInterface {
 			return {
 				id: call.id,
 				name: call.name,
+				success: false,
 				error: message.success ? message.value : 'Unknown thrown value',
 			}
 		}
