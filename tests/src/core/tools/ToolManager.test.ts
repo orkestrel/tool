@@ -294,6 +294,72 @@ describe('ToolManager execution', () => {
 		])
 	})
 
+	it('uses a fixed fallback when a thrown object cannot be stringified', async () => {
+		const reason = {
+			toString: () => {
+				throw new Error('blocked string conversion')
+			},
+		}
+		const manager = new ToolManager()
+		manager.add(
+			new Tool({
+				name: 'hostile',
+				execute: () => {
+					throw reason
+				},
+			}),
+		)
+
+		await expect(manager.execute(createToolCall('hostile', {}, 'hostile'))).resolves.toEqual({
+			id: 'hostile',
+			name: 'hostile',
+			error: 'Unknown thrown value',
+		})
+	})
+
+	it('uses a fixed fallback when an Error subclass message getter throws', async () => {
+		const reason = new (class extends Error {})('hidden')
+		Object.defineProperty(reason, 'message', {
+			get: () => {
+				throw new Error('blocked message')
+			},
+		})
+		const manager = new ToolManager()
+		manager.add(
+			new Tool({
+				name: 'hostile',
+				execute: () => {
+					throw reason
+				},
+			}),
+		)
+
+		await expect(manager.execute(createToolCall('hostile', {}, 'hostile'))).resolves.toEqual({
+			id: 'hostile',
+			name: 'hostile',
+			error: 'Unknown thrown value',
+		})
+	})
+
+	it('uses a fixed fallback for a thrown null-prototype object', async () => {
+		const reason: unknown = Object.create(null)
+		const manager = new ToolManager()
+		manager.add(
+			new Tool({
+				name: 'hostile',
+				execute: () => {
+					throw reason
+				},
+			}),
+		)
+
+		await expect(manager.execute(createToolCall('hostile', {}, 'hostile'))).resolves.toEqual({
+			id: 'hostile',
+			name: 'hostile',
+			error: 'Unknown thrown value',
+		})
+	})
+
 	it('resolves unknown names to not-found errors without a value', async () => {
 		const manager = new ToolManager()
 
@@ -334,6 +400,34 @@ describe('ToolManager batch execution', () => {
 			{ id: 'a', name: 'add', value: 2 },
 			{ id: 'b', name: 'boom', error: 'nope' },
 			{ id: 'c', name: 'ghost', error: 'tool not found: ghost' },
+		])
+	})
+
+	it('fully resolves a success beside a hostile throw', async () => {
+		const reason = {
+			toString: () => {
+				throw new Error('blocked string conversion')
+			},
+		}
+		const manager = new ToolManager()
+		manager.add([
+			new Tool({ name: 'ok', execute: () => 'done' }),
+			new Tool({
+				name: 'hostile',
+				execute: () => {
+					throw reason
+				},
+			}),
+		])
+
+		await expect(
+			manager.execute([
+				createToolCall('hostile', {}, 'failed'),
+				createToolCall('ok', {}, 'succeeded'),
+			]),
+		).resolves.toEqual([
+			{ id: 'failed', name: 'hostile', error: 'Unknown thrown value' },
+			{ id: 'succeeded', name: 'ok', value: 'done' },
 		])
 	})
 

@@ -5,7 +5,7 @@ import type {
 	ToolManagerInterface,
 	ToolResult,
 } from '../types.js'
-import { isArray } from '@orkestrel/contract'
+import { attempt, isArray } from '@orkestrel/contract'
 
 /**
  * An insertion-ordered tool registry with per-call error isolation.
@@ -91,10 +91,13 @@ export class ToolManager implements ToolManagerInterface {
 			const value = await tool.execute(call.arguments)
 			return { id: call.id, name: call.name, value }
 		} catch (error) {
+			const message = attempt(() =>
+				error instanceof Error ? String(error.message) : String(error),
+			)
 			return {
 				id: call.id,
 				name: call.name,
-				error: error instanceof Error ? error.message : String(error),
+				error: message.success ? message.value : 'Unknown thrown value',
 			}
 		}
 	}

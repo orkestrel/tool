@@ -1,5 +1,5 @@
 import type { ToolCall } from './types.js'
-import { isRecord, isString } from '@orkestrel/contract'
+import { holds, isRecord, isString } from '@orkestrel/contract'
 
 /**
  * Determine whether an unknown value is structurally a {@link ToolCall}.
@@ -20,6 +20,8 @@ import { isRecord, isString } from '@orkestrel/contract'
  * ```
  */
 export function isToolCall(value: unknown): value is ToolCall {
-	if (!isRecord(value)) return false
-	return isString(value.id) && isString(value.name) && isRecord(value.arguments)
+	return holds(
+		() =>
+			isRecord(value) && isString(value.id) && isString(value.name) && isRecord(value.arguments),
+	)
 }
