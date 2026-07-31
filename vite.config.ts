@@ -788,47 +788,6 @@ export const srcCore = (config?: UserConfig): UserConfig =>
 		config ?? {},
 	)
 
-export const srcServer = (config?: UserConfig): UserConfig =>
-	srcCore(
-		mergeConfig(
-			{
-				publicDir: false,
-				plugins: [outputBoundary('dist/src/server'), environmentBoundary('src/server')],
-				build: {
-					lib: {
-						entry: resolveWorkspacePath('src/server/index.ts'),
-						fileName: (format: string) => (format === 'es' ? 'index.js' : 'index.cjs'),
-					},
-					outDir: 'dist/src/server',
-					target: 'node22',
-					rolldownOptions: {
-						external: (id: string) =>
-							id === '@src/core' || id.startsWith('node:') || id.startsWith('@orkestrel/'),
-						output: [
-							{
-								format: 'es',
-								entryFileNames: 'index.js',
-								paths: { '@src/core': '../core/index.js' },
-							},
-							{
-								format: 'cjs',
-								entryFileNames: 'index.cjs',
-								paths: { '@src/core': '../core/index.cjs' },
-							},
-						],
-					},
-				},
-				test: {
-					name: { label: 'src:server', color: 'red' },
-					include: ['tests/src/server/**/*.test.ts'],
-					exclude: ['tests/src/core/**/*.test.ts'],
-					setupFiles: ['./tests/setup.ts', './tests/setupServer.ts'],
-				},
-			},
-			config ?? {},
-		),
-	)
-
 export const policy = (config?: UserConfig): UserConfig =>
 	mergeConfig(
 		{
@@ -863,6 +822,6 @@ export const guides = (config?: UserConfig): UserConfig =>
 export default defineConfig({
 	resolve,
 	test: {
-		projects: [srcCore, srcServer, policy, guides],
+		projects: [srcCore, policy, guides],
 	},
 })

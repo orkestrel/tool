@@ -18,8 +18,7 @@
 		"skipLibCheck": true,
 		"noEmit": true,
 		"paths": {
-			"@src/core": ["./src/core/index.ts"],
-			"@src/server": ["./src/server/index.ts"]
+			"@src/core": ["./src/core/index.ts"]
 		}
 	},
 	"exclude": ["node_modules", "dist", "tmp"]

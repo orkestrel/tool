@@ -1,29 +1,16 @@
 # @orkestrel/tool
 
-Concrete, LLM-callable **tools** for the `@orkestrel` line — built over
-[`@orkestrel/agent`](https://github.com/orkestrel/agent)'s `ToolInterface` /
-`createTool` runtime, with pluggable stores. Part of the `@orkestrel` line.
+The tool runtime for the `@orkestrel` line.
 
-- **`createWorkflowTool`** — authors and runs an
-  [`@orkestrel/workflow`](https://github.com/orkestrel/workflow) definition in
-  one call (flat steps / lenient draft / full definition, depth + cycle
-  guarded), with an optional pluggable `WorkflowStoreInterface` that persists
-  each executed run's snapshot on settle.
-- **`createWorkspaceTool`** — a 13-operation workspace-editing tool driving
-  `@orkestrel/agent`'s workspace runtime, either against a caller-supplied
-  manager or a fresh one built over a pluggable `WorkspaceStoreInterface`.
-- **`createAgentTool`** — net-new sub-agent delegation: resolves and runs one
-  seeded agent via an `AgentRegistryInterface`, depth + cycle guarded,
-  deliberately storeless (persistence, if any, rides the registry's own
-  configuration).
-- **Adapters** — `createToolFunction` / `createAgentFunction` compose a
-  registered tool or a live agent into a workflow's `functions` registry, plus
-  the authoring umbrella (`WorkflowSteps` / `WorkflowDraft`,
-  `createWorkflowDraftContract`, `workflowToolSummary`, `MAX_WORKFLOW_DEPTH`).
+A tool is a callable function described by a JSON Schema: a name, an optional description, an
+optional parameter schema, and the handler that runs it. That is the whole idea — a tool is an
+API call whose shape is data, so whoever calls it can discover it, present it, and invoke it
+without knowing anything about the code behind it. This package ships that shape and the
+registry around it: definitions to advertise, calls to dispatch, results to correlate, and
+per-call error isolation so one bad tool never takes down the run.
 
-**Status: v0.0.1 pending publish**, once the upstream `@orkestrel/workflow` /
-`@orkestrel/agent` cleanups that drop their authoring surfaces (this package
-becomes the defining home) land.
+Nothing here is model-specific. An agent loop, an MCP bridge, and plain application code are all
+just callers.
 
 ## Install
 
@@ -31,20 +18,51 @@ becomes the defining home) land.
 npm install @orkestrel/tool
 ```
 
+## Example
+
+```ts
+import { createTool, createToolManager } from '@orkestrel/tool'
+
+const tools = createToolManager()
+tools.add(
+	createTool({
+		name: 'add',
+		description: 'Add two numeric values and return their sum.',
+		parameters: {
+			type: 'object',
+			properties: {
+				left: { type: 'number' },
+				right: { type: 'number' },
+			},
+			required: ['left', 'right'],
+		},
+		execute: (args) => Number(args.left) + Number(args.right),
+	}),
+)
+
+tools.definitions() // hand these to whatever chooses the call
+
+const result = await tools.execute({
+	id: 'call-1',
+	name: 'add',
+	arguments: { left: 2, right: 3 },
+})
+result.value // 5 — or result.error, when the call failed
+```
+
+Handlers may be synchronous or asynchronous. An unknown name or a thrown handler becomes an
+error result instead of escaping, and a batch runs concurrently, stays isolated per call, and
+answers in input order.
+
+Ready-made tools ship in `@orkestrel/toolbox`.
+
+See the [tool guide](guides/src/tool.md) for the complete surface and behavior.
+
 ## Requirements
 
-- Node.js >= 22
-- Dual ESM + CommonJS builds (`import` and `require` both supported)
-
-## Guide
-
-See [`guides/src/tool.md`](guides/src/tool.md).
-
-## Package
-
-Published as a single typed entry point per the `exports` field in
-`package.json`.
+- Node.js 22.12 or newer
+- ESM and CommonJS consumers
 
 ## License
 
-MIT © [Orkestrel](https://github.com/orkestrel) — see [LICENSE](./LICENSE).
+MIT © [Orkestrel](https://github.com/orkestrel) — see [LICENSE](LICENSE).

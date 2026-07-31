@@ -1,63 +1,35 @@
 # Guides
 
-A dual-axis index into this repository's guides — by concept, and by directory (AGENTS §22).
+The concept and directory index for the `@orkestrel/tool` runtime. One concept, one guide: the
+tool — JSON-Schema-described callable functions and the registry that advertises and executes
+them.
 
 ## By concept
 
-| Concept | Spec                         | Source                                                   | Tests                                                                            |
-| ------- | ---------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Tool    | [`src/tool.md`](src/tool.md) | [`src/core`](../src/core), [`src/server`](../src/server) | [`tests/src/core`](../tests/src/core), [`tests/src/server`](../tests/src/server) |
+| Concept | Spec                         | Source                    | Tests                                 |
+| ------- | ---------------------------- | ------------------------- | ------------------------------------- |
+| Tool    | [`src/tool.md`](src/tool.md) | [`src/core`](../src/core) | [`tests/src/core`](../tests/src/core) |
 
 ## By directory
 
-| Directory    | Guide                        |
-| ------------ | ---------------------------- |
-| `src/core`   | [`src/tool.md`](src/tool.md) |
-| `src/server` | [`src/tool.md`](src/tool.md) |
+| Directory  | Guide                        |
+| ---------- | ---------------------------- |
+| `src/core` | [`src/tool.md`](src/tool.md) |
 
 ## Dependency reference
 
-[`src/agent.md`](src/agent.md) is a byte-identical mirror of the guide for
-`@orkestrel/agent` — a runtime dependency, the tool runtime (`ToolInterface`,
-`createTool`, `ToolManager`) this package's concrete tools plug into. It
-documents **that package's** surface, not anything sourced in this repo; it
-is kept here so a reader of this package can see the runtime it is built
-from without leaving this guide set.
+These mirror the guides of packages this repository consumes; they document those packages, not
+this one.
 
-[`src/contract.md`](src/contract.md) is a byte-identical mirror of the guide
-for `@orkestrel/contract` — a runtime dependency, the shape DSL a tool's
-`operation`-discriminated contract compiles through. It documents **that
-package's** surface (guards, combinators, parsers, and the shape DSL), not
-anything sourced in this repo; it is kept here so a reader of this package
-can see the primitives it is built from without leaving this guide set.
+[`src/contract.md`](src/contract.md) — the runtime dependency `@orkestrel/contract`, whose total
+guards back the runtime's overload narrowing and tool-call validation.
 
-[`src/workflow.md`](src/workflow.md) is a byte-identical mirror of the guide
-for `@orkestrel/workflow` — a runtime dependency, the workflow primitives the
-workflow-authoring tool wraps. It documents **that package's** surface, not
-anything sourced in this repo; it is kept here for the same reason.
+[`src/guide.md`](src/guide.md) — the development dependency `@orkestrel/guide`, which powers this
+repository's guide-parity tests.
 
-[`src/guide.md`](src/guide.md) is a byte-identical mirror of the guide for
-`@orkestrel/guide` — the devDependency powering this repo's guides-parity
-test suite (`tests/guides/src/parity.test.ts`). It documents **that
-package's** surface (`Guide` / `Source`, the manifest and comparison
-helpers), not anything sourced in this repo; it is kept here so a reader of
-the parity suite can see the primitives it is built from without leaving
-this guide set.
-
-[`src/database.md`](src/database.md) is a byte-identical mirror of the guide
-for `@orkestrel/database` — a runtime dependency, the typed database layer
-(`DatabaseInterface`, `DriverInterface`, `KeyFunction`, the `Criteria` /
-`Condition` query DSL) `createDatabaseTool` wraps. It documents **that
-package's** surface, not anything sourced in this repo; it is kept here so a
-reader of this package can see the primitives it is built from without
-leaving this guide set.
-
-[`src/relation.md`](src/relation.md) is a byte-identical mirror of the guide
-for `@orkestrel/relation` — a runtime dependency, the declarative ORM layer
-(`RelationManagerInterface`, `ModelInterface`, `Include`) `createRelationTool`
-wraps. It documents **that package's** surface, not anything sourced in this
-repo; it is kept here for the same reason.
+[`src/scaffold.md`](src/scaffold.md) — the development dependency `@orkestrel/scaffold`, which
+maintains the repository scaffold.
 
 ## See also
 
-- [`AGENTS.md`](../AGENTS.md) — the rules; §22 documentation-as-contracts.
+- [`AGENTS.md`](../AGENTS.md) — the repository's coding and documentation contract.
