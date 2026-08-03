@@ -20,7 +20,9 @@ export interface ToolDefinition {
  *
  * @remarks
  * `id` correlates the call with its later {@link ToolResult}. `arguments` is the
- * caller-supplied arguments record.
+ * caller-supplied arguments record. `caller` is optional consumer-asserted context:
+ * this package forwards it without verification, so the tool or its policy layer owns
+ * every trust decision.
  */
 export interface ToolCall {
 	/** The identifier that correlates this call with its result. */
@@ -29,6 +31,8 @@ export interface ToolCall {
 	readonly name: string
 	/** The caller-supplied arguments record. */
 	readonly arguments: Readonly<Record<string, unknown>>
+	/** Consumer-asserted caller context, forwarded without verification. */
+	readonly caller?: unknown
 }
 
 /**
@@ -83,9 +87,10 @@ export interface ToolInterface extends ToolDefinition {
 	 * Execute the tool.
 	 *
 	 * @param args - The caller-supplied arguments record
+	 * @param caller - Optional consumer-asserted caller context, forwarded without verification
 	 * @returns The tool's synchronous or asynchronous result
 	 */
-	execute(args: Readonly<Record<string, unknown>>): Promise<unknown> | unknown
+	execute(args: Readonly<Record<string, unknown>>, caller?: unknown): Promise<unknown> | unknown
 }
 
 /**
@@ -94,7 +99,8 @@ export interface ToolInterface extends ToolDefinition {
  * @remarks
  * `name` identifies the tool, `description` and `parameters` define what is advertised
  * to a caller, `summary` optionally replaces the advertised description, and `execute`
- * handles the caller-supplied arguments record.
+ * handles the caller-supplied arguments record plus optional consumer-asserted caller
+ * context. This package forwards that context without verification.
  */
 export interface ToolOptions {
 	/** The name a caller uses to select the tool. */
@@ -105,8 +111,11 @@ export interface ToolOptions {
 	readonly summary?: string
 	/** The JSON Schema for the tool's arguments. */
 	readonly parameters?: Readonly<Record<string, unknown>>
-	/** The handler that executes the tool. */
-	readonly execute: (args: Readonly<Record<string, unknown>>) => Promise<unknown> | unknown
+	/** The handler that receives arguments and optional unverified caller context. */
+	readonly execute: (
+		args: Readonly<Record<string, unknown>>,
+		caller?: unknown,
+	) => Promise<unknown> | unknown
 }
 
 /**
@@ -161,14 +170,14 @@ export interface ToolManagerInterface {
 	/**
 	 * Execute one call with error isolation.
 	 *
-	 * @param call - The tool call to execute
+	 * @param call - The tool call to execute, including optional caller context
 	 * @returns The correlated result
 	 */
 	execute(call: ToolCall): Promise<ToolResult>
 	/**
 	 * Execute a batch of calls with per-call error isolation.
 	 *
-	 * @param calls - The tool calls to execute
+	 * @param calls - The tool calls to execute, including optional caller context
 	 * @returns The correlated results in input order
 	 */
 	execute(calls: readonly ToolCall[]): Promise<readonly ToolResult[]>

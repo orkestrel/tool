@@ -6,7 +6,8 @@ import { holds, isRecord, isString } from '@orkestrel/contract'
  *
  * @remarks
  * This total guard accepts a plain record with string `id` and `name` fields and a
- * plain-record `arguments` field. Adversarial values return `false`.
+ * plain-record `arguments` field. Optional caller context remains opaque and is not
+ * read or verified. Adversarial values return `false`.
  *
  * @param value - The value to test
  * @returns `true` when the value has the complete tool-call shape

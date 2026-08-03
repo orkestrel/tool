@@ -14,7 +14,8 @@ import { attempt, isArray } from '@orkestrel/contract'
  * A repeated name overwrites the registered tool without changing its insertion
  * position. Definitions advertise `summary` in place of `description` when present.
  * Unknown names and handler throws resolve to error results; batch execution preserves
- * input order and never fails as a whole because of an individual call.
+ * input order and never fails as a whole because of an individual call. Optional
+ * consumer-asserted caller context is forwarded without verification.
  *
  * @example
  * ```ts
@@ -93,7 +94,10 @@ export class ToolManager implements ToolManagerInterface {
 			}
 		}
 		try {
-			const value = await tool.execute(call.arguments)
+			const caller = call.caller
+			const value = await (caller === undefined
+				? tool.execute(call.arguments)
+				: tool.execute(call.arguments, caller))
 			return { id: call.id, name: call.name, success: true, value }
 		} catch (error) {
 			const message = attempt(() =>

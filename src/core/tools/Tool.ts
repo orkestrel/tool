@@ -4,7 +4,8 @@ import type { ToolInterface, ToolOptions } from '../types.js'
  * An executable tool definition bound to a handler.
  *
  * @remarks
- * Schema fields and arguments are forwarded by reference. Handler failures are not
+ * Schema fields, arguments, and present caller context are forwarded by reference.
+ * Caller context is consumer-asserted and is not verified. Handler failures are not
  * caught here; {@link ToolManager} owns per-call error isolation.
  *
  * @example
@@ -27,7 +28,10 @@ export class Tool implements ToolInterface {
 	readonly description?: string
 	readonly summary?: string
 	readonly parameters?: Readonly<Record<string, unknown>>
-	readonly #execute: (args: Readonly<Record<string, unknown>>) => Promise<unknown> | unknown
+	readonly #execute: (
+		args: Readonly<Record<string, unknown>>,
+		caller?: unknown,
+	) => Promise<unknown> | unknown
 
 	constructor(options: ToolOptions) {
 		this.name = options.name
@@ -37,7 +41,8 @@ export class Tool implements ToolInterface {
 		this.#execute = options.execute
 	}
 
-	execute(args: Readonly<Record<string, unknown>>): Promise<unknown> | unknown {
-		return this.#execute(args)
+	execute(args: Readonly<Record<string, unknown>>, caller?: unknown): Promise<unknown> | unknown {
+		if (caller === undefined) return this.#execute(args)
+		return this.#execute(args, caller)
 	}
 }

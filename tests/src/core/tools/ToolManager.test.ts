@@ -170,6 +170,59 @@ describe('ToolManager execution', () => {
 		expect(seen[1]).toBe(empty)
 	})
 
+	it('forwards caller context verbatim and absence as undefined', async () => {
+		const seen: (readonly [Readonly<Record<string, unknown>>, unknown])[] = []
+		const manager = new ToolManager()
+		manager.add(
+			new Tool({
+				name: 'capture',
+				execute: (args, caller) => {
+					seen.push([args, caller])
+					return args.value
+				},
+			}),
+		)
+		const absent = { value: 'absent' }
+		const present = { value: 'present' }
+		const caller = { subject: 'user-42' }
+
+		const results = await manager.execute([
+			createToolCall('capture', absent, 'absent'),
+			{ id: 'present', name: 'capture', arguments: present, caller },
+		])
+
+		expect(seen).toEqual([
+			[absent, undefined],
+			[present, caller],
+		])
+		expect(seen[0]?.[1]).toBeUndefined()
+		expect(seen[1]?.[1]).toBe(caller)
+		expect(results).toEqual([
+			{ id: 'absent', name: 'capture', success: true, value: 'absent' },
+			{ id: 'present', name: 'capture', success: true, value: 'present' },
+		])
+	})
+
+	it('keeps an existing one-argument handler additive', async () => {
+		const execute = (args: Readonly<Record<string, unknown>>): unknown => args.value
+		const manager = new ToolManager()
+		manager.add(new Tool({ name: 'echo', execute }))
+
+		await expect(
+			manager.execute({
+				id: 'additive',
+				name: 'echo',
+				arguments: { value: 'unchanged' },
+				caller: { subject: 'user-42' },
+			}),
+		).resolves.toEqual({
+			id: 'additive',
+			name: 'echo',
+			success: true,
+			value: 'unchanged',
+		})
+	})
+
 	it('preserves falsy, null, and undefined success values', async () => {
 		const manager = new ToolManager()
 		manager.add([

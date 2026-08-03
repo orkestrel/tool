@@ -36,6 +36,30 @@ describe('Tool', () => {
 		expect(received[0]).toBe(args)
 	})
 
+	it('forwards caller context while preserving absent call arity', () => {
+		const received: unknown[][] = []
+		const tool = new Tool({
+			name: 'capture',
+			execute: (...values) => {
+				received.push(values)
+				return undefined
+			},
+		})
+		const args = {}
+		const caller = { subject: 'user-42' }
+
+		tool.execute(args)
+		tool.execute(args, caller)
+
+		expect(received).toHaveLength(2)
+		expect(received[0]).toHaveLength(1)
+		expect(received[0]?.[0]).toBe(args)
+		expect(received[0]?.[1]).toBeUndefined()
+		expect(received[1]).toHaveLength(2)
+		expect(received[1]?.[0]).toBe(args)
+		expect(received[1]?.[1]).toBe(caller)
+	})
+
 	it('exposes every definition field independently and by reference', () => {
 		const parameters = { type: 'object', properties: { a: { type: 'number' } } }
 		const complete = new Tool({

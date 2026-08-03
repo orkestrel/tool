@@ -7,6 +7,18 @@ describe('isToolCall', () => {
 		expect(isToolCall({ id: '2', name: 'search', arguments: { query: 'birds' } })).toBe(true)
 	})
 
+	it('accepts opaque caller context without reading it', () => {
+		const call = { id: '1', name: 'search', arguments: {} }
+		Object.defineProperty(call, 'caller', {
+			get: () => {
+				throw new Error('caller context is opaque')
+			},
+		})
+
+		expect(() => isToolCall(call)).not.toThrow()
+		expect(isToolCall(call)).toBe(true)
+	})
+
 	it('rejects non-record values and incomplete calls', () => {
 		for (const value of [
 			null,
