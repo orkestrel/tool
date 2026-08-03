@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/tool",
-	"version": "0.0.8",
+	"version": "0.0.9",
 	"description": "The tool runtime for the @orkestrel line — JSON-Schema tool definitions, calls, results, executable tools, and a registry with per-call error isolation. Part of the @orkestrel line.",
 	"keywords": [
 		"agent",
