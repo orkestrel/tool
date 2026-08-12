@@ -6,14 +6,14 @@ them.
 
 ## By concept
 
-| Concept | Spec                         | Source                    | Tests                                 |
-| ------- | ---------------------------- | ------------------------- | ------------------------------------- |
+| Concept | Spec                 | Source                    | Tests                                 |
+| ------- | -------------------- | ------------------------- | ------------------------------------- |
 | Tool    | [`tool.md`](tool.md) | [`src/core`](../src/core) | [`tests/src/core`](../tests/src/core) |
 
 ## By directory
 
-| Directory  | Guide                        |
-| ---------- | ---------------------------- |
+| Directory  | Guide                |
+| ---------- | -------------------- |
 | `src/core` | [`tool.md`](tool.md) |
 
 ## Dependency reference
