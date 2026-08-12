@@ -60,7 +60,7 @@ answers in input order.
 
 Ready-made tools ship in `@orkestrel/toolbox`.
 
-See the [tool guide](guides/src/tool.md) for the complete surface and behavior.
+See the [tool guide](guides/tool.md) for the complete surface and behavior.
 
 ## Requirements
 

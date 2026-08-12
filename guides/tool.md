@@ -46,9 +46,9 @@ absent optional field is simply absent.
 | `ToolManagerInterface` | interface | The registry contract; its readonly `count` is the number of registered tools. See [`## Methods`](#methods).                        |
 | `ToolResult`           | type      | `ToolSuccess \| ToolFailure` — the discriminated correlated outcome; narrow on `success` to read `value` or `error`.                |
 
-### Helpers
+### Validators
 
-The call-envelope guard, from [`helpers.ts`](../src/core/helpers.ts).
+The call-envelope guard, from [`validators.ts`](../src/core/validators.ts).
 
 | Name         | Kind     | Signature                               | Behavior                                                                                                                                                              |
 | ------------ | -------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -256,7 +256,7 @@ registers here unchanged.
 - [`Tool.test.ts`](../tests/src/core/tools/Tool.test.ts) — definition binding, optional-field omission, argument identity, return values, and the deliberate absence of handler isolation.
 - [`ToolManager.test.ts`](../tests/src/core/tools/ToolManager.test.ts) — insertion order, overwrite and removal lifecycle, definition projection, and isolated single and batch execution.
 - [`factories.test.ts`](../tests/src/core/factories.test.ts) — factory construction and working instances.
-- [`helpers.test.ts`](../tests/src/core/helpers.test.ts) — tool-call envelope boundaries: incomplete calls, wrong field types, and non-record arguments.
+- [`validators.test.ts`](../tests/src/core/validators.test.ts) — tool-call envelope boundaries: incomplete calls, wrong field types, and non-record arguments.
 
 ## See also
 
