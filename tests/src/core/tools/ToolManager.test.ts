@@ -148,7 +148,7 @@ describe('ToolManager execution', () => {
 	})
 
 	it('forwards the exact arguments record, including an empty record', async () => {
-		const seen: Readonly<Record<string, unknown>>[] = []
+		const seen: Array<Readonly<Record<string, unknown>>> = []
 		const manager = new ToolManager()
 		manager.add(
 			new Tool({
@@ -171,7 +171,7 @@ describe('ToolManager execution', () => {
 	})
 
 	it('forwards caller context verbatim and absence as undefined', async () => {
-		const seen: (readonly [Readonly<Record<string, unknown>>, unknown])[] = []
+		const seen: Array<readonly [Readonly<Record<string, unknown>>, unknown]> = []
 		const manager = new ToolManager()
 		manager.add(
 			new Tool({

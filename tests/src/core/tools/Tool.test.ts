@@ -20,7 +20,7 @@ describe('Tool', () => {
 	})
 
 	it('forwards the exact arguments object', () => {
-		const received: Readonly<Record<string, unknown>>[] = []
+		const received: Array<Readonly<Record<string, unknown>>> = []
 		const tool = new Tool({
 			name: 'capture',
 			execute: (args) => {
