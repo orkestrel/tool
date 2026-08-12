@@ -2127,7 +2127,7 @@ renderer behind the table and blockquote work; the template engine behind every 
 artifact; and, consumed only at the executable boundary, the terminal prompt toolkit and the console
 reporter. The core face uses the first four and stays pure; the server face adds only `node:*`
 builtins. Development dependencies are the shared tooling baseline plus the guide-parity toolkit
-that drives [`parity.test.ts`](../../tests/guides/src/parity.test.ts) and `@orkestrel/html`,
+that drives [`parity.test.ts`](../../tests/guides.test.ts) and `@orkestrel/html`,
 which this package's real emitted-configuration tests execute. Generated manifests keep that HTML
 dependency scoped to `app/browser`; source-only, `app/core`, and `app/server` workspaces do not
 receive it. The engines floor is Node
@@ -2844,7 +2844,7 @@ isMissingPathError(caught) // true only for an ENOENT error
   confirm, apply, and JSON paths.
 - [`tests/src/bin/e2e.test.ts`](../../tests/src/bin/e2e.test.ts) — the built executable driven end
   to end over real directories.
-- [`tests/guides/src/parity.test.ts`](../../tests/guides/src/parity.test.ts) — this guide against
+- [`tests/guides.test.ts`](../../tests/guides.test.ts) — this guide against
   the two barrels: every export documented, every documented symbol real, every interface method
   matched, every documented function exampled, and every link resolvable.
 
