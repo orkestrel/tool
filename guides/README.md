@@ -8,26 +8,26 @@ them.
 
 | Concept | Spec                         | Source                    | Tests                                 |
 | ------- | ---------------------------- | ------------------------- | ------------------------------------- |
-| Tool    | [`src/tool.md`](src/tool.md) | [`src/core`](../src/core) | [`tests/src/core`](../tests/src/core) |
+| Tool    | [`tool.md`](tool.md) | [`src/core`](../src/core) | [`tests/src/core`](../tests/src/core) |
 
 ## By directory
 
 | Directory  | Guide                        |
 | ---------- | ---------------------------- |
-| `src/core` | [`src/tool.md`](src/tool.md) |
+| `src/core` | [`tool.md`](tool.md) |
 
 ## Dependency reference
 
 These mirror the guides of packages this repository consumes; they document those packages, not
 this one.
 
-[`src/contract.md`](src/contract.md) — the runtime dependency `@orkestrel/contract`, whose total
+[`contract.md`](contract.md) — the runtime dependency `@orkestrel/contract`, whose total
 guards back the runtime's overload narrowing and tool-call validation.
 
-[`src/guide.md`](src/guide.md) — the development dependency `@orkestrel/guide`, which powers this
+[`guide.md`](guide.md) — the development dependency `@orkestrel/guide`, which powers this
 repository's guide-parity tests.
 
-[`src/scaffold.md`](src/scaffold.md) — the development dependency `@orkestrel/scaffold`, which
+[`scaffold.md`](scaffold.md) — the development dependency `@orkestrel/scaffold`, which
 maintains the repository scaffold.
 
 ## See also
