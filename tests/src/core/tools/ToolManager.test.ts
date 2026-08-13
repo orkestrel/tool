@@ -1,6 +1,7 @@
 import { Tool, ToolManager } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createToolCall, requireValue, waitForDelay } from '../../../setup.js'
+import { requireValue, waitForDelay } from '@orkestrel/test'
+import { createToolCall } from '../../../setup.js'
 
 describe('ToolManager registry', () => {
 	it('starts empty', () => {

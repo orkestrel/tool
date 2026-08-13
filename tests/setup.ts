@@ -1,17 +1,7 @@
 import type { ToolCall } from '@src/core'
 
-/**
- * Require a possibly absent value in a test assertion.
- *
- * @typeParam T - The expected value type
- * @param value - The value to require
- * @returns The present value
- * @throws {Error} When the value is `undefined`
- */
-export function requireValue<T>(value: T | undefined): T {
-	if (value === undefined) throw new Error('expected value')
-	return value
-}
+// The fleet-wide helpers live in `@orkestrel/test`. What remains here is what is specific to this
+// package: the tool call fixture and the browser-path predicate.
 
 /**
  * Create a tool call for runtime tests.
@@ -27,16 +17,6 @@ export function createToolCall(
 	id = 'call',
 ): ToolCall {
 	return { id, name, arguments: args }
-}
-
-/**
- * Resolve after a short real delay.
- *
- * @param ms - The delay in milliseconds
- * @returns A promise that resolves after the delay
- */
-export function waitForDelay(ms = 0): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /**
