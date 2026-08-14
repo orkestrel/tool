@@ -1,6 +1,6 @@
 import { Tool, ToolManager } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { requireValue, waitForDelay } from '@orkestrel/test'
+import { createRecorder, requireValue, waitForDelay } from '@orkestrel/test'
 import { createToolCall } from '../../../setup.js'
 
 describe('ToolManager registry', () => {
@@ -172,13 +172,13 @@ describe('ToolManager execution', () => {
 	})
 
 	it('forwards caller context verbatim and absence as undefined', async () => {
-		const seen: Array<readonly [Readonly<Record<string, unknown>>, unknown]> = []
+		const recorder = createRecorder<[args: Readonly<Record<string, unknown>>, caller: unknown]>()
 		const manager = new ToolManager()
 		manager.add(
 			new Tool({
 				name: 'capture',
 				execute: (args, caller) => {
-					seen.push([args, caller])
+					recorder.handler(args, caller)
 					return args.value
 				},
 			}),
@@ -192,12 +192,13 @@ describe('ToolManager execution', () => {
 			{ id: 'present', name: 'capture', arguments: present, caller },
 		])
 
-		expect(seen).toEqual([
+		expect(recorder.calls).toEqual([
 			[absent, undefined],
 			[present, caller],
 		])
-		expect(seen[0]?.[1]).toBeUndefined()
-		expect(seen[1]?.[1]).toBe(caller)
+		expect(recorder.count).toBe(2)
+		expect(recorder.calls[0]?.[1]).toBeUndefined()
+		expect(recorder.calls[1]?.[1]).toBe(caller)
 		expect(results).toEqual([
 			{ id: 'absent', name: 'capture', success: true, value: 'absent' },
 			{ id: 'present', name: 'capture', success: true, value: 'present' },
