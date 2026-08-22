@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/tool",
-	"version": "0.0.11",
+	"version": "0.0.12",
 	"description": "The tool runtime for the @orkestrel line — JSON-Schema tool definitions, calls, results, executable tools, and a registry with per-call error isolation. Part of the @orkestrel line.",
 	"keywords": [
 		"agent",
@@ -64,7 +64,7 @@
 		"prepublishOnly": "npm run format:check && npm run lint:check && npm run check && npm run build && npm test"
 	},
 	"dependencies": {
-		"@orkestrel/contract": "^0.0.12"
+		"@orkestrel/contract": "^0.0.13"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.59.0",
