@@ -56,6 +56,14 @@ The call-envelope guard, from [`validators.ts`](../src/core/validators.ts).
 | ------------ | -------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `isToolCall` | function | `(value: unknown) => value is ToolCall` | Total guard for the envelope: a plain record with string `id` and `name` and a plain-record `arguments`. Malformed or hostile input returns `false`; it never throws. |
 
+### Helpers
+
+The advertised-definition projection, from [`helpers.ts`](../src/core/helpers.ts).
+
+| Name               | Kind     | Signature                                 | Behavior                                                                                                                                  |
+| ------------------ | -------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `toolToDefinition` | function | `(tool: ToolInterface) => ToolDefinition` | Projects one tool onto a fresh definition, advertising its summary in place of its full description and carrying its schema by reference. |
+
 ### Factories
 
 From [`factories.ts`](../src/core/factories.ts) — the constructor-free way to reach both
@@ -97,15 +105,15 @@ The public call-signature members of each behavioral interface, one table per in
 
 #### `ToolManagerInterface`
 
-| Method        | Returns                                        | Behavior                                                                                    |
-| ------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `add`         | `void`                                         | Registers one tool or a readonly batch; a repeated name overwrites in place.                |
-| `tool`        | `ToolInterface \| undefined`                   | Finds one registered tool by name, returning the exact registered instance.                 |
-| `tools`       | `readonly ToolInterface[]`                     | Lists the registered tools in insertion order.                                              |
-| `definitions` | `readonly ToolDefinition[]`                    | Lists the advertised definitions, preferring each tool's summary over its full description. |
-| `execute`     | `Promise<ToolResult \| readonly ToolResult[]>` | Executes one call or a readonly batch with per-call error isolation.                        |
-| `remove`      | `boolean`                                      | Removes one name or a readonly batch of names and reports whether any tool was present.     |
-| `clear`       | `void`                                         | Removes every registered tool.                                                              |
+| Method        | Returns                                        | Behavior                                                                                        |
+| ------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `add`         | `void`                                         | Registers one tool or a readonly batch; a repeated name overwrites in place.                    |
+| `tool`        | `ToolInterface \| undefined`                   | Finds one registered tool by name, returning the exact registered instance.                     |
+| `tools`       | `readonly ToolInterface[]`                     | Lists the registered tools in insertion order.                                                  |
+| `definitions` | `readonly ToolDefinition[]`                    | Lists the advertised definitions, preferring each tool's summary over its full description.     |
+| `execute`     | `Promise<ToolResult \| readonly ToolResult[]>` | Executes one call or a readonly batch with per-call error isolation.                            |
+| `remove`      | `boolean`                                      | Removes one name or a readonly batch of names and reports whether every named tool was present. |
+| `clear`       | `void`                                         | Removes every registered tool.                                                                  |
 
 ## Anatomy of a tool
 
@@ -168,7 +176,7 @@ tools.tools() // a fresh readonly array, in insertion order
 tools.definitions() // the same order, projected to plain ToolDefinition values
 
 tools.remove('echo') // true — the tool was present
-tools.remove(['now', 'ghost']) // true — any one removal counts
+tools.remove(['now', 'ghost']) // false — 'ghost' was never registered, so not every name succeeded
 tools.clear() // back to empty
 ```
 

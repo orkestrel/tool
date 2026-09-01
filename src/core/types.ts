@@ -192,7 +192,7 @@ export interface ToolManagerInterface {
 	 * Remove a batch of registered tools.
 	 *
 	 * @param names - The tool names to remove
-	 * @returns Whether any named tool was present
+	 * @returns True if every named tool was present; false otherwise
 	 */
 	remove(names: readonly string[]): boolean
 	/**

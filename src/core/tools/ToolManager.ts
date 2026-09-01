@@ -6,6 +6,7 @@ import type {
 	ToolResult,
 } from '../types.js'
 import { attempt, isArray } from '@orkestrel/contract'
+import { toolToDefinition } from '../helpers.js'
 
 /**
  * An insertion-ordered tool registry with per-call error isolation.
@@ -56,7 +57,7 @@ export class ToolManager implements ToolManagerInterface {
 	}
 
 	definitions(): readonly ToolDefinition[] {
-		return [...this.#tools.values()].map((tool) => this.#definition(tool))
+		return [...this.#tools.values()].map((tool) => toolToDefinition(tool))
 	}
 
 	execute(call: ToolCall): Promise<ToolResult>
@@ -70,9 +71,9 @@ export class ToolManager implements ToolManagerInterface {
 	remove(names: readonly string[]): boolean
 	remove(names: string | readonly string[]): boolean {
 		if (isArray(names)) {
-			let removed = false
+			let removed = true
 			for (const name of names) {
-				if (this.#tools.delete(name)) removed = true
+				if (!this.#tools.delete(name)) removed = false
 			}
 			return removed
 		}
@@ -110,19 +111,5 @@ export class ToolManager implements ToolManagerInterface {
 				error: message.success ? message.value : 'Unknown thrown value',
 			}
 		}
-	}
-
-	#definition(tool: ToolInterface): ToolDefinition {
-		const definition: {
-			name: string
-			description?: string
-			parameters?: Readonly<Record<string, unknown>>
-		} = {
-			name: tool.name,
-		}
-		const description = tool.summary ?? tool.description
-		if (description !== undefined) definition.description = description
-		if (tool.parameters !== undefined) definition.parameters = tool.parameters
-		return definition
 	}
 }

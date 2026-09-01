@@ -621,18 +621,20 @@ describe('ToolManager removal', () => {
 		expect(manager.count).toBe(0)
 	})
 
-	it('removes a batch when any named tool is present', () => {
+	it('removes a batch and reports true only when every named tool was present', () => {
 		const manager = new ToolManager()
 		manager.add([
 			new Tool({ name: 'a', execute: () => 0 }),
 			new Tool({ name: 'b', execute: () => 0 }),
+			new Tool({ name: 'c', execute: () => 0 }),
 		])
 
-		expect(manager.remove(['a', 'missing'])).toBe(true)
+		expect(manager.remove(['a', 'missing'])).toBe(false)
 		expect(manager.remove(['absent'])).toBe(false)
-		expect(manager.remove([])).toBe(false)
-		expect(manager.tools().map((tool) => tool.name)).toEqual(['b'])
-		expect(manager.definitions().map((definition) => definition.name)).toEqual(['b'])
+		expect(manager.remove(['b', 'c'])).toBe(true)
+		expect(manager.remove([])).toBe(true)
+		expect(manager.tools().map((tool) => tool.name)).toEqual([])
+		expect(manager.definitions().map((definition) => definition.name)).toEqual([])
 	})
 
 	it('executes a removed tool as not found and re-adds it at the end', async () => {
