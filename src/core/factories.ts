@@ -3,7 +3,7 @@ import { Tool } from './tools/Tool.js'
 import { ToolManager } from './tools/ToolManager.js'
 
 /**
- * Create an executable tool.
+ * Creates an executable tool.
  *
  * @param options - The advertised definition and execution handler
  * @returns A tool bound to the supplied handler
@@ -24,7 +24,7 @@ export function createTool(options: ToolOptions): ToolInterface {
 }
 
 /**
- * Create an empty tool registry.
+ * Creates an empty tool registry.
  *
  * @returns A registry that advertises definitions and executes calls with per-call
  * error isolation

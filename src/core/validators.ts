@@ -2,7 +2,7 @@ import type { ToolCall } from './types.js'
 import { holds, isRecord, isString } from '@orkestrel/contract'
 
 /**
- * Determine whether an unknown value is structurally a {@link ToolCall}.
+ * Determines whether an unknown value is structurally a {@link ToolCall}.
  *
  * @remarks
  * This total guard accepts a plain record with string `id` and `name` fields and a
@@ -10,7 +10,7 @@ import { holds, isRecord, isString } from '@orkestrel/contract'
  * read or verified. Adversarial values return `false`.
  *
  * @param value - The value to test
- * @returns `true` when the value has the complete tool-call shape
+ * @returns True if the value has the complete tool-call shape; false otherwise
  *
  * @example
  * ```ts

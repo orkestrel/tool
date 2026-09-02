@@ -1,7 +1,7 @@
 import type { ToolInterface, ToolOptions } from '../types.js'
 
 /**
- * An executable tool definition bound to a handler.
+ * Binds an executable tool definition to a handler.
  *
  * @remarks
  * Schema fields, arguments, and present caller context are forwarded by reference.

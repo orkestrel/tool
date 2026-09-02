@@ -9,7 +9,7 @@ import { attempt, isArray } from '@orkestrel/contract'
 import { toolToDefinition } from '../helpers.js'
 
 /**
- * An insertion-ordered tool registry with per-call error isolation.
+ * Represents an insertion-ordered tool registry with per-call error isolation.
  *
  * @remarks
  * A repeated name overwrites the registered tool without changing its insertion
