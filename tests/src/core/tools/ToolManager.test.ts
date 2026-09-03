@@ -427,6 +427,22 @@ describe('ToolManager execution', () => {
 		})
 	})
 
+	it('rejects when the call id accessor throws, the documented limit on always resolving', async () => {
+		// The envelope members are read to correlate the result, so a call whose own `id`
+		// getter throws leaves no result to build and `execute` rejects instead. This is the
+		// qualification `ToolResult` and the guide carry; it is not a handler failure.
+		const manager = new ToolManager()
+		manager.add(new Tool({ name: 'add', execute: (args) => Number(args.a) + Number(args.b) }))
+		const call = createToolCall('add', { a: 1, b: 1 }, 'hostile')
+		Object.defineProperty(call, 'id', {
+			get: () => {
+				throw new Error('blocked id read')
+			},
+		})
+
+		await expect(manager.execute(call)).rejects.toThrow('blocked id read')
+	})
+
 	it('resolves unknown names to not-found errors without a value', async () => {
 		const manager = new ToolManager()
 

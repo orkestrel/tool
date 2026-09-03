@@ -10,7 +10,7 @@ registry around it: definitions to advertise, calls to dispatch, results to corr
 per-call error isolation so one bad tool never takes down the run.
 
 Nothing here is model-specific. An agent loop, an MCP bridge, and plain application code are all
-just callers.
+callers.
 
 ## Install
 

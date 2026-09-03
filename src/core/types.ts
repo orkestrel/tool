@@ -69,7 +69,9 @@ export interface ToolFailure extends Failure<string> {
  * Represents the outcome of executing a {@link ToolCall}.
  *
  * @remarks
- * Always a result and never a throw. Narrow on `success`.
+ * Always a result and never a throw for a call whose members are plain values. A call
+ * whose `id` or `name` accessor throws when read makes `execute` reject instead, because
+ * no correlated result can be built without them. Narrow on `success`.
  */
 export type ToolResult = ToolSuccess | ToolFailure
 
@@ -85,6 +87,12 @@ export interface ToolInterface extends ToolDefinition {
 	readonly summary?: string
 	/**
 	 * Runs the tool's handler.
+	 *
+	 * @remarks
+	 * Failures are not contained here: a synchronous throw propagates and an
+	 * asynchronous rejection rejects. {@link ToolManagerInterface.execute} is where a
+	 * call becomes a result. The registry omits `caller` from the invocation when the
+	 * call carries none, so a handler reading its own arity sees one argument.
 	 *
 	 * @param args - The caller-supplied arguments record
 	 * @param caller - Optional consumer-asserted caller context, forwarded without verification

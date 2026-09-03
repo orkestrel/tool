@@ -2,6 +2,7 @@
 // this repo's own `guides/README.md` manifest. The four constants below are this
 // package's own, and are the only part a sibling package changes.
 
+import { Tool, createTool, createToolManager, isToolCall } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import {
 	computeSymbolKey,
@@ -168,3 +169,100 @@ for (const entry of manifest) {
 		})
 	})
 }
+
+// The EXECUTED half. Every preceding case reads a name — from guide text or from source
+// text — and a name that resolves proves nothing about the sentence beside it, so a fence
+// whose comment claims a value the code contradicts passes all of them. The cases here run
+// the flagship fences and assert the values their comments claim. Change a fence, change
+// the transcription beside it.
+describe('flagship fences', () => {
+	const guideText = requireValue(files['guides/tool.md'], 'Missing file: guides/tool.md')
+	// The anatomy fence's tool, built once. Both flagship fences register this same tool.
+	const add = createTool({
+		name: 'add',
+		description: 'Add two numeric values and return their sum. Both operands are required.',
+		summary: 'Add two numbers.',
+		parameters: {
+			type: 'object',
+			properties: {
+				left: { type: 'number' },
+				right: { type: 'number' },
+			},
+			required: ['left', 'right'],
+		},
+		execute: (args) => Number(args.left) + Number(args.right),
+	})
+
+	it('counts, orders, and removes exactly as the registry fence claims', () => {
+		const tools = createToolManager()
+		tools.add(add)
+		tools.add([
+			new Tool({ name: 'echo', execute: (args) => args.value }),
+			new Tool({
+				name: 'now',
+				description: 'Current epoch milliseconds.',
+				execute: () => Date.now(),
+			}),
+		])
+
+		expect(tools.count).toBe(3)
+		expect(tools.tools().map((tool) => tool.name)).toEqual(['add', 'echo', 'now'])
+		expect(tools.remove('echo')).toBe(true)
+		expect(tools.remove(['now', 'ghost'])).toBe(false)
+
+		tools.clear()
+
+		expect(tools.count).toBe(0)
+	})
+
+	it('carries the registry fence lines the transcription copies', () => {
+		// The presence guard beside the transcription: it proves the transcribed lines are
+		// still the documented ones, and nothing whatever about behavior. Every line that
+		// carries a claim is bound, so a comment cannot drift to the opposite value and stay
+		// green.
+		expect(guideText).toContain('tools.count // 3')
+		expect(guideText).toContain("tools.remove('echo') // true")
+		expect(guideText).toContain("tools.remove(['now', 'ghost']) // false")
+	})
+
+	it('guards, executes, and batches exactly as the calls fence claims', async () => {
+		// The registry fence ends on `tools.clear()`, so a literal sequential transcription
+		// would answer `tool not found: add`. Registering `add` again is what makes this the
+		// case the calls fence documents.
+		const tools = createToolManager()
+		tools.add(add)
+		const incoming: unknown = {
+			id: 'call-1',
+			name: 'add',
+			arguments: { left: 2, right: 3 },
+			caller: { subject: 'user-42' },
+		}
+
+		expect(isToolCall(incoming)).toBe(true)
+		if (!isToolCall(incoming)) throw new Error('the fence envelope failed its own guard')
+
+		const result = await tools.execute(incoming)
+
+		expect(result.success).toBe(true)
+		const value = result.success ? result.value : undefined
+		expect(value).toBe(5)
+
+		const batch = await tools.execute([
+			{ id: '1', name: 'add', arguments: { left: 2, right: 3 } },
+			{ id: '2', name: 'ghost', arguments: {} },
+		])
+
+		expect(batch).toEqual([
+			{ id: '1', name: 'add', success: true, value: 5 },
+			{ id: '2', name: 'ghost', success: false, error: 'tool not found: ghost' },
+		])
+	})
+
+	it('carries the calls fence lines the transcription copies', () => {
+		expect(guideText).toContain('result.value // 5')
+		expect(guideText).toContain("// → { id: '1', name: 'add', success: true, value: 5 }")
+		expect(guideText).toContain(
+			"// → { id: '2', name: 'ghost', success: false, error: 'tool not found: ghost' }",
+		)
+	})
+})
