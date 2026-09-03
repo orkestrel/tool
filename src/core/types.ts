@@ -131,9 +131,10 @@ export interface ToolOptions {
  *
  * @remarks
  * Tools are keyed by name in insertion order. Adding an existing name overwrites its
- * value without changing its position. Every call resolves to a {@link ToolResult};
- * missing tools and thrown handlers become error results. Batch execution preserves
- * input order and isolates each call.
+ * value without changing its position. Every call whose members are plain values
+ * resolves to a {@link ToolResult}; missing tools and thrown handlers become error
+ * results, and a call whose `id` or `name` accessor throws when read makes `execute`
+ * reject instead. Batch execution preserves input order and isolates each such call.
  */
 export interface ToolManagerInterface {
 	/** Reports how many tools are registered. */

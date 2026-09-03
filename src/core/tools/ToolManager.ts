@@ -14,9 +14,10 @@ import { toolToDefinition } from '../helpers.js'
  * @remarks
  * A repeated name overwrites the registered tool without changing its insertion
  * position. Definitions advertise `summary` in place of `description` when present.
- * Unknown names and handler throws resolve to error results; batch execution preserves
- * input order and never fails as a whole because of an individual call. Optional
- * consumer-asserted caller context is forwarded without verification.
+ * Unknown names and handler throws resolve to error results; a call whose `id` or `name`
+ * accessor throws when read makes its call, and the batch holding it, reject. Batch
+ * execution preserves input order and isolates each call whose members are plain
+ * values. Optional consumer-asserted caller context is forwarded without verification.
  *
  * @example
  * ```ts

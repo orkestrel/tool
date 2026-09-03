@@ -27,9 +27,9 @@
 
 `Tool` and `ToolManager` carry the runtime. A `Tool` is inert — a definition plus a handler, with
 no lifecycle and no failure handling of its own. A `ToolManager` is the live surface a caller
-holds: it hands `definitions()` outward, takes a `ToolCall` back, and answers with a `ToolResult`
-that is always a result and never a throw. Everything else in this module is the plain data
-those two exchange.
+holds: it hands `definitions()` outward, takes a `ToolCall` back, and answers with a `ToolResult`,
+a result rather than a throw for a call whose members are plain values. Everything else in this
+module is the plain data those two exchange.
 
 ## Surface
 
@@ -245,10 +245,11 @@ necessarily meaningful or truthy.
 An in-process caller needing a typed error can call `tools.tool(name)`, then
 `tool.execute(args)` inside its own `try`/`catch`.
 
-A batch is dispatched concurrently and answered in input order, with each call isolated from its
-siblings — one failure never voids the batch, and duplicate ids stay distinct positional calls
-rather than collapsing into one. That isolation is what lets a caller feed every result back to
-whatever produced the calls and let it react to the failures itself.
+A batch is dispatched concurrently and answered in input order, with each call whose members are
+plain values isolated from its siblings — a handler failure never voids the batch, a call whose
+`id` or `name` accessor throws when read rejects it, and duplicate ids stay distinct positional
+calls rather than collapsing into one. That isolation is what lets a caller feed every result back
+to whatever produced the calls and let it react to the failures itself.
 
 ## Callers
 

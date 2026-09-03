@@ -30,6 +30,12 @@ repository's guide-parity tests.
 [`scaffold.md`](scaffold.md) — the development dependency `@orkestrel/scaffold`, which
 maintains the repository scaffold.
 
+[`probe.md`](probe.md) — the development dependency `@orkestrel/probe`, which runs a
+claim's case and its negative control against this workspace.
+
+[`test.md`](test.md) — the development dependency `@orkestrel/test`, which supplies the
+shared test helpers every suite here imports.
+
 ## See also
 
 - [`AGENTS.md`](../AGENTS.md) — the repository's coding and documentation contract.
