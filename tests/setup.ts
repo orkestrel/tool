@@ -4,7 +4,7 @@ import type { ToolCall } from '@src/core'
 // package: the tool call fixture.
 
 /**
- * Create a tool call for runtime tests.
+ * Creates a tool call for runtime tests.
  *
  * @param name - The tool name
  * @param args - The model-supplied arguments record
