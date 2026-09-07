@@ -2,12 +2,13 @@ import type { ToolCall } from './types.js'
 import { holds, isRecord, isString } from '@orkestrel/contract'
 
 /**
- * Determines whether an unknown value is structurally a {@link ToolCall}.
+ * Determines whether an unknown value is structurally a {@link ToolCall}, staying total
+ * for malformed and adversarial input.
  *
  * @remarks
- * This total guard accepts a plain record with string `id` and `name` fields and a
+ * The accepted shape is a plain record with string `id` and `name` fields and a
  * plain-record `arguments` field. Optional caller context remains opaque and is not
- * read or verified. Adversarial values return `false`.
+ * read or verified.
  *
  * @param value - The value to test
  * @returns True if the value has the complete tool-call shape; false otherwise

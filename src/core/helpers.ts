@@ -1,15 +1,16 @@
 import type { ToolDefinition, ToolInterface } from './types.js'
 
 /**
- * Projects a tool onto the plain definition advertised to a caller.
+ * Projects a tool onto the plain definition advertised to a caller, advertising an
+ * authored `summary` in place of the full description and carrying the parameter schema
+ * by reference.
  *
  * @remarks
  * The projection is a fresh object carrying `name`, then `description` only when the
  * tool authored a summary or a description, then `parameters` only when the tool
- * authored a schema. An authored `summary` is advertised in place of the full
- * `description`, which stays on the tool for direct lookup. The parameter schema is
- * copied by reference and never cloned, so the definition is never a live handle on
- * the tool's handler.
+ * authored a schema. The full `description` stays on the tool for direct lookup, and
+ * the schema is never cloned, so the definition is never a live handle on the tool's
+ * handler.
  *
  * @param tool - The tool to project
  * @returns A fresh definition carrying only the fields the tool authored

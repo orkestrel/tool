@@ -1,16 +1,15 @@
 # @orkestrel/tool
 
-The tool runtime for the `@orkestrel` line.
+> The tool runtime for the `@orkestrel` line: a `Tool` binding an advertised JSON Schema
+> definition to its handler, a `ToolManager` registry that advertises those definitions and
+> executes calls with per-call error isolation, and the correlated `ToolCall` and `ToolResult`
+> pair that travels between a caller and the registry.
 
-A tool is a callable function described by a JSON Schema: a name, an optional description, an
-optional parameter schema, and the handler that runs it. That is the whole idea — a tool is an
-API call whose shape is data, so whoever calls it can discover it, present it, and invoke it
-without knowing anything about the code behind it. This package ships that shape and the
-registry around it: definitions to advertise, calls to dispatch, results to correlate, and
-per-call error isolation so one bad tool never takes down the run.
-
-Nothing here is model-specific. An agent loop, an MCP bridge, and plain application code are all
-callers.
+Build a tool with the `createTool` function, register it in a registry from the
+`createToolManager` function, hand `definitions()` to whatever chooses the call, and pass the
+call you get back to `execute`. One bad tool never takes down the run: a handler that throws
+comes back as an error result correlated to its call. Nothing here is model-specific — an agent
+loop, an MCP bridge, and plain application code are all callers.
 
 ## Install
 

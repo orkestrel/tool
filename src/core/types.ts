@@ -16,7 +16,7 @@ export interface ToolDefinition {
 }
 
 /**
- * Describes a call issued by a caller.
+ * Describes one request to run a named tool.
  *
  * @remarks
  * `id` correlates the call with its later {@link ToolResult}. `arguments` is the
@@ -86,7 +86,8 @@ export interface ToolInterface extends ToolDefinition {
 	/** Holds a concise description to advertise in place of the full description. */
 	readonly summary?: string
 	/**
-	 * Runs the tool's handler.
+	 * Runs the tool's handler with the caller-supplied arguments and any consumer-asserted
+	 * caller context.
 	 *
 	 * @remarks
 	 * Failures are not contained here: a synchronous throw propagates and an
@@ -157,7 +158,7 @@ export interface ToolManagerInterface {
 	 * Finds one registered tool by name.
 	 *
 	 * @param name - The registered tool name
-	 * @returns The tool when found, otherwise `undefined`
+	 * @returns The exact registered instance when found, otherwise `undefined`
 	 */
 	tool(name: string): ToolInterface | undefined
 	/**
@@ -169,6 +170,7 @@ export interface ToolManagerInterface {
 	/**
 	 * Lists the definitions advertised to a caller.
 	 *
+	 * @remarks
 	 * The projected `description` is the tool's `summary` when one was authored,
 	 * advertised in place of the full description. The full text stays on the tool
 	 * for direct lookup.
