@@ -7,9 +7,8 @@
 
 Build a tool with the `createTool` function, register it in a registry from the
 `createToolManager` function, hand `definitions()` to whatever chooses the call, and pass the
-call you get back to `execute`. One bad tool never takes down the run: a handler that throws
-comes back as an error result correlated to its call. Nothing here is model-specific — an agent
-loop, an MCP bridge, and plain application code are all callers.
+call you get back to `execute`. Nothing here is model-specific — an agent loop, an MCP bridge,
+and plain application code are all callers.
 
 ## Install
 

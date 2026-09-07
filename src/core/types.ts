@@ -135,7 +135,7 @@ export interface ToolOptions {
  * value without changing its position. Every call whose members are plain values
  * resolves to a {@link ToolResult}; missing tools and thrown handlers become error
  * results, and a call whose `id` or `name` accessor throws when read makes `execute`
- * reject instead. Batch execution preserves input order and isolates each such call.
+ * reject instead. Batch execution preserves input order.
  */
 export interface ToolManagerInterface {
 	/** Reports how many tools are registered. */

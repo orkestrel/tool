@@ -9,8 +9,7 @@ import type { ToolDefinition, ToolInterface } from './types.js'
  * The projection is a fresh object carrying `name`, then `description` only when the
  * tool authored a summary or a description, then `parameters` only when the tool
  * authored a schema. The full `description` stays on the tool for direct lookup, and
- * the schema is never cloned, so the definition is never a live handle on the tool's
- * handler.
+ * the definition is never a live handle on the tool's handler.
  *
  * @param tool - The tool to project
  * @returns A fresh definition carrying only the fields the tool authored

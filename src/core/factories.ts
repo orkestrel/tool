@@ -39,8 +39,7 @@ export function createTool(options: ToolOptions): ToolInterface {
  * per-call error isolation, returned as a `ToolManagerInterface` so a caller holds the
  * published contract rather than the `ToolManager` class.
  *
- * @returns A registry that advertises definitions and executes calls with per-call
- * error isolation
+ * @returns A registry bound to no tools
  *
  * @example
  * ```ts

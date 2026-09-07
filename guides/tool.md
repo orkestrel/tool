@@ -54,7 +54,8 @@ interface's members in braces, and a type alias's value.
 
 `ToolInterface` and `ToolManagerInterface` list every member they declare or inherit. The
 call-signature members of each are documented under [Methods](#methods); the readonly `count` of
-`ToolManagerInterface` is a Surface member with no method row.
+`ToolManagerInterface` reports how many tools are registered and is a Surface member with no
+method row.
 
 ### Validators
 
