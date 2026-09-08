@@ -39,18 +39,20 @@ Source: [`src/core`](../src/core). Published through `@orkestrel/tool`.
 
 The data shapes, from [`types.ts`](../src/core/types.ts). Every property is readonly, and an
 optional field the caller did not supply is absent from the value. A `Shape` cell holds an
-interface's members in braces, and a type alias's value.
+interface's data members as bare names in braces, `?` marking an optional member and `plus`
+introducing its call-signature members, and a type alias's own type literal with a union's arms
+escaped as `\|`. An extended interface's name comes before `plus`, with the members it adds after.
 
-| Name                   | Kind      | Shape                                                              | Summary                                                                          |
-| ---------------------- | --------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
-| `ToolDefinition`       | interface | `{ name, description?, parameters? }`                              | Describes a tool as advertised to a caller.                                      |
-| `ToolCall`             | interface | `{ id, name, arguments, caller? }`                                 | Describes one request to run a named tool.                                       |
-| `ToolSuccess`          | interface | `{ id, name, success: true, value }`                               | Reports the successful outcome of executing a `ToolCall`.                        |
-| `ToolFailure`          | interface | `{ id, name, success: false, error }`                              | Reports the failed outcome of executing a `ToolCall`.                            |
-| `ToolOptions`          | interface | `{ name, description?, summary?, parameters?, execute }`           | Configures an executable tool.                                                   |
-| `ToolInterface`        | interface | `{ name, description?, parameters?, summary?, execute }`           | Represents an executable tool: its advertised definition plus its local handler. |
-| `ToolManagerInterface` | interface | `{ count, add, tool, tools, definitions, execute, remove, clear }` | Represents a registry of executable tools with per-call error isolation.         |
-| `ToolResult`           | type      | `ToolSuccess \| ToolFailure`                                       | Represents the outcome of executing a `ToolCall`.                                |
+| Name                   | Kind      | Shape                                                                  | Summary                                                                          |
+| ---------------------- | --------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `ToolDefinition`       | interface | `{ name, description?, parameters? }`                                  | Describes a tool as advertised to a caller.                                      |
+| `ToolCall`             | interface | `{ id, name, arguments, caller? }`                                     | Describes one request to run a named tool.                                       |
+| `ToolSuccess`          | interface | `Success<unknown> plus { id, name }`                                   | Reports the successful outcome of executing a `ToolCall`.                        |
+| `ToolFailure`          | interface | `Failure<string> plus { id, name }`                                    | Reports the failed outcome of executing a `ToolCall`.                            |
+| `ToolOptions`          | interface | `{ name, description?, summary?, parameters?, execute }`               | Configures an executable tool.                                                   |
+| `ToolInterface`        | interface | `ToolDefinition plus { summary? } plus execute`                        | Represents an executable tool: its advertised definition plus its local handler. |
+| `ToolManagerInterface` | interface | `{ count } plus add, tool, tools, definitions, execute, remove, clear` | Represents a registry of executable tools with per-call error isolation.         |
+| `ToolResult`           | type      | `ToolSuccess \| ToolFailure`                                           | Represents the outcome of executing a `ToolCall`.                                |
 
 `ToolInterface` and `ToolManagerInterface` list every member they declare or inherit. The
 call-signature members of each are documented under [Methods](#methods); the readonly `count` of
