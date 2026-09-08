@@ -61,11 +61,12 @@ method row.
 
 ### Validators
 
-The call-envelope guard, from [`validators.ts`](../src/core/validators.ts).
+The call-envelope guard, from [`validators.ts`](../src/core/validators.ts). In a guard table a
+`Shape` cell holds the type the guard narrows to.
 
-| Name         | Kind     | Signature                               | Summary                                                                                                              |
-| ------------ | -------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `isToolCall` | function | `(value: unknown) => value is ToolCall` | Determines whether an unknown value is structurally a `ToolCall`, staying total for malformed and adversarial input. |
+| Name         | Kind     | Shape      | Summary                                                                                                              |
+| ------------ | -------- | ---------- | -------------------------------------------------------------------------------------------------------------------- |
+| `isToolCall` | function | `ToolCall` | Determines whether an unknown value is structurally a `ToolCall`, staying total for malformed and adversarial input. |
 
 ### Helpers
 
