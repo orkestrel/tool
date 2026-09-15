@@ -7,8 +7,7 @@ import { holds, isRecord, isString } from '@orkestrel/contract'
  *
  * @remarks
  * The accepted shape is a plain record with string `id` and `name` fields and a
- * plain-record `arguments` field. Optional caller context remains opaque and is not
- * read or verified.
+ * plain-record `arguments` field. Extra fields are not read or verified.
  *
  * @param value - The value to test
  * @returns True if the value has the complete tool-call shape; false otherwise

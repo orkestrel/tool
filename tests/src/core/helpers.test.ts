@@ -51,6 +51,32 @@ describe('toolToDefinition', () => {
 		expect(definition.parameters).toBe(parameters)
 	})
 
+	it('forwards title and annotations while substituting summary for description', () => {
+		const annotations = { pure: true, untrusted: false, consequential: false }
+		const tool = new Tool({
+			name: 'echo',
+			title: 'Echo',
+			description: 'Full description',
+			summary: 'Echo a value',
+			annotations,
+			execute: (args) => args.value,
+		})
+
+		const definition = toolToDefinition(tool)
+
+		expect(definition).toEqual({
+			name: 'echo',
+			title: 'Echo',
+			description: 'Echo a value',
+			annotations,
+		})
+		expect(definition.annotations).toBe(annotations)
+		expect(Object.keys(definition)).toEqual(['name', 'title', 'description', 'annotations'])
+		expect(definition).not.toHaveProperty('summary')
+		expect(definition).not.toHaveProperty('signal')
+		expect(definition).not.toHaveProperty('caller')
+	})
+
 	it('projects a fresh object on every call', () => {
 		const tool = new Tool({ name: 'echo', execute: (args) => args.value })
 

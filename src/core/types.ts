@@ -1,4 +1,31 @@
-import type { Failure, Success } from '@orkestrel/contract'
+import type { ContractShape, Failure, Fault, Success } from '@orkestrel/contract'
+
+/** Carries the signal and consumer-asserted identity for an execution. */
+export interface ToolContext {
+	/** Aborts when the caller stops waiting for this call. */
+	readonly signal: AbortSignal
+	/** Carries consumer-asserted caller identity, forwarded without verification. */
+	readonly caller?: unknown
+}
+
+/** Describes the observable effects and content of a tool. */
+export interface ToolAnnotations {
+	/** Reports that the tool changes no state its caller can observe. */
+	readonly pure?: boolean
+	/** Reports that the tool's value can carry content the tool did not author. */
+	readonly untrusted?: boolean
+	/** Reports that running the tool has a consequence a caller must confirm. */
+	readonly consequential?: boolean
+}
+
+/** Identifies a schema conflict or an argument validation failure. */
+export type ToolErrorCode = 'SCHEMA' | 'ARGUMENTS'
+
+/** Carries the structured faults behind an argument validation failure. */
+export interface ToolErrorContext {
+	/** Holds the contract's full parse-fault report. */
+	readonly faults?: readonly Fault[]
+}
 
 /**
  * Describes a tool as advertised to a caller.
@@ -9,10 +36,14 @@ import type { Failure, Success } from '@orkestrel/contract'
 export interface ToolDefinition {
 	/** Identifies the tool a caller selects. */
 	readonly name: string
+	/** Holds a display title for the tool. */
+	readonly title?: string
 	/** Describes the tool's behavior. */
 	readonly description?: string
 	/** Holds the JSON Schema for the tool's arguments. */
 	readonly parameters?: Readonly<Record<string, unknown>>
+	/** Describes the tool's observable effects and content. */
+	readonly annotations?: ToolAnnotations
 }
 
 /**
@@ -20,9 +51,8 @@ export interface ToolDefinition {
  *
  * @remarks
  * `id` correlates the call with its later {@link ToolResult}. `arguments` is the
- * caller-supplied arguments record. `caller` is optional consumer-asserted context:
- * this package forwards it without verification, so the tool or its policy layer owns
- * every trust decision.
+ * caller-supplied arguments record. Execution context travels separately from this
+ * JSON call envelope.
  */
 export interface ToolCall {
 	/** Correlates this call with its result. */
@@ -31,8 +61,6 @@ export interface ToolCall {
 	readonly name: string
 	/** Carries the record the caller supplied. */
 	readonly arguments: Readonly<Record<string, unknown>>
-	/** Carries consumer-asserted context, forwarded without verification. */
-	readonly caller?: unknown
 }
 
 /**
@@ -56,7 +84,7 @@ export interface ToolSuccess extends Success<unknown> {
  * `error` is the failure message: an unknown tool name, an `Error`'s message, or
  * a String-converted throw. The registry carries no further structure. An
  * in-process caller needing a typed error calls `tools.tool(name)`, then
- * `tool.execute(args)` in its own `try`/`catch`.
+ * `tool.execute(args, context)` in its own `try`/`catch`.
  */
 export interface ToolFailure extends Failure<string> {
 	/** Identifies the corresponding call. */
@@ -86,20 +114,25 @@ export interface ToolInterface extends ToolDefinition {
 	/** Holds a concise description to advertise in place of the full description. */
 	readonly summary?: string
 	/**
-	 * Runs the tool's handler with the caller-supplied arguments and any consumer-asserted
-	 * caller context.
+	 * Runs the tool's handler with the caller-supplied arguments and execution context.
 	 *
 	 * @remarks
 	 * Failures are not contained here: a synchronous throw propagates and an
 	 * asynchronous rejection rejects. {@link ToolManagerInterface.execute} is where a
-	 * call becomes a result. The registry omits `caller` from the invocation when the
-	 * call carries none, so a handler reading its own arity sees one argument.
+	 * call becomes a result. A configured contract refuses arguments with parse faults
+	 * before the handler runs, then forwards `contract.parse(args)`, an owned,
+	 * normalized copy in the schema's types with undeclared keys dropped; without a
+	 * contract, the raw record is forwarded unchanged.
+	 * Caller identity is forwarded without verification.
+	 * The second parameter is the execution context; caller identity is `context.caller`.
+	 * `Tool.execute` refuses nothing on an aborted signal; the manager checks the signal
+	 * before entry, and a direct caller who passes an aborted signal gets a handler that observes it.
 	 *
 	 * @param args - The caller-supplied arguments record
-	 * @param caller - Optional consumer-asserted caller context, forwarded without verification
+	 * @param context - The required signal and optional consumer-asserted caller identity
 	 * @returns The tool's synchronous or asynchronous result
 	 */
-	execute(args: Readonly<Record<string, unknown>>, caller?: unknown): Promise<unknown> | unknown
+	execute(args: Readonly<Record<string, unknown>>, context: ToolContext): Promise<unknown> | unknown
 }
 
 /**
@@ -108,22 +141,34 @@ export interface ToolInterface extends ToolDefinition {
  * @remarks
  * `name` identifies the tool, `description` and `parameters` define what is advertised
  * to a caller, `summary` optionally replaces the advertised description, and `execute`
- * handles the caller-supplied arguments record plus optional consumer-asserted caller
- * context. This package forwards that context without verification.
+ * handles the caller-supplied arguments record and execution context. `contract`
+ * derives the advertised parameters and checks arguments with `explain`; supplying
+ * `parameters` alongside `contract` throws a `ToolError` with code `SCHEMA`.
  */
 export interface ToolOptions {
 	/** Identifies the tool a caller selects. */
 	readonly name: string
+	/** Holds a display title for the tool. */
+	readonly title?: string
 	/** Describes the tool's behavior in full. */
 	readonly description?: string
 	/** Holds a concise description to advertise in place of the full description. */
 	readonly summary?: string
 	/** Holds the JSON Schema for the tool's arguments. */
 	readonly parameters?: Readonly<Record<string, unknown>>
-	/** Handles the arguments and optional unverified caller context. */
+	/** Derives parameters and validates arguments before execution. */
+	readonly contract?: ContractShape
+	/** Describes the tool's observable effects and content. */
+	readonly annotations?: ToolAnnotations
+	/**
+	 * Handles the arguments and required execution context.
+	 *
+	 * @remarks
+	 * The second parameter is the execution context; caller identity is `context.caller`.
+	 */
 	readonly execute: (
 		args: Readonly<Record<string, unknown>>,
-		caller?: unknown,
+		context: ToolContext,
 	) => Promise<unknown> | unknown
 }
 
@@ -181,17 +226,19 @@ export interface ToolManagerInterface {
 	/**
 	 * Executes one call with error isolation.
 	 *
-	 * @param call - The tool call to execute, including optional caller context
+	 * @param call - The tool call to execute
+	 * @param context - The execution context; omission creates a non-aborted signal
 	 * @returns The correlated result
 	 */
-	execute(call: ToolCall): Promise<ToolResult>
+	execute(call: ToolCall, context?: ToolContext): Promise<ToolResult>
 	/**
 	 * Executes a batch of calls with per-call error isolation.
 	 *
-	 * @param calls - The tool calls to execute, including optional caller context
+	 * @param calls - The tool calls to execute
+	 * @param context - The shared execution context; omission creates a non-aborted signal
 	 * @returns The correlated results in input order
 	 */
-	execute(calls: readonly ToolCall[]): Promise<readonly ToolResult[]>
+	execute(calls: readonly ToolCall[], context?: ToolContext): Promise<readonly ToolResult[]>
 	/**
 	 * Removes one registered tool.
 	 *

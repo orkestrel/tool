@@ -35,10 +35,18 @@ await new GuideCommand({
 	reader: readInventory,
 	runner: createVitest,
 }).execute(async ({ files, report, rows }) => {
-	const { isRecord, parseJSON } = await import('@orkestrel/contract')
+	const { isRecord, parseJSON, numberShape, objectShape } = await import('@orkestrel/contract')
 	const { computeSymbolKey, findMissingSymbols } = await import('@orkestrel/guide')
 	const { requireValue } = await import('@orkestrel/test')
-	const { Tool, createTool, createToolManager, isToolCall } = await import('@src/core')
+	const {
+		Tool,
+		ToolError,
+		createTool,
+		createToolManager,
+		isToolCall,
+		isToolError,
+		toolToDefinition,
+	} = await import('@src/core')
 	const { describe, expect, it } = await import('vitest')
 
 	it('manifest lists at least one guide', () => {
@@ -90,6 +98,14 @@ await new GuideCommand({
 			})
 			it('documents every barrel export', () => {
 				expect(findMissingSymbols(source.surface(), guide.surface())).toEqual([])
+			})
+			it('documents the exported error context with its faults member', () => {
+				expect(source.surface().some((symbol) => symbol.name === 'ToolErrorContext')).toBe(true)
+				expect(guide.surface().some((symbol) => symbol.name === 'ToolErrorContext')).toBe(true)
+				const row = requireValue(files[entry.spec], `Missing file: ${entry.spec}`)
+					.split('\n')
+					.find((line) => line.split('|')[1]?.trim() === '`ToolErrorContext`')
+				expect(row?.split('|')[3]?.trim()).toBe('`{ faults? }`')
 			})
 			it('documents only barrel exports', () => {
 				expect(findMissingSymbols(guide.surface(), source.surface())).toEqual([])
@@ -157,6 +173,121 @@ await new GuideCommand({
 	// the transcription beside it.
 	describe('flagship fences', () => {
 		const guideText = requireValue(files[GUIDE_SPEC], `Missing file: ${GUIDE_SPEC}`)
+		it('keeps every fence byte-equal to its transcription', () => {
+			const guide = requireValue(rows.find(({ entry }) => entry.spec === GUIDE_SPEC)).guide
+			expect(guide.fences().map(({ code }) => code)).toEqual([
+				`import { createTool } from '@orkestrel/tool'
+
+const add = createTool({
+	name: 'add',
+	description: 'Add two numeric values and return their sum. Both operands are required.',
+	summary: 'Add two numbers.',
+	parameters: {
+		type: 'object',
+		properties: {
+			left: { type: 'number' },
+			right: { type: 'number' },
+		},
+		required: ['left', 'right'],
+	},
+	execute: (args) => Number(args.left) + Number(args.right),
+})`,
+				`import { Tool, createToolManager } from '@orkestrel/tool'
+
+const tools = createToolManager()
+tools.add(add) // the tool defined earlier
+tools.add([
+	new Tool({ name: 'echo', execute: (args) => args.value }),
+	new Tool({ name: 'now', description: 'Current epoch milliseconds.', execute: () => Date.now() }),
+])
+
+tools.count // 3
+tools.tool('add') // the exact instance that was registered, or undefined
+tools.tools() // a fresh readonly array, in insertion order
+tools.definitions() // the same order, projected to plain ToolDefinition values
+
+tools.remove('echo') // true — the tool was present
+tools.remove(['now', 'ghost']) // false — 'ghost' was never registered, so not every name succeeded
+tools.clear() // back to empty`,
+				`import { isToolCall } from '@orkestrel/tool'
+
+tools.add(add) // restores the tool removed by the registry example
+
+const incoming: unknown = {
+	id: 'call-1',
+	name: 'add',
+	arguments: { left: 2, right: 3 },
+}
+
+if (isToolCall(incoming)) {
+	const result = await tools.execute(incoming)
+	if (result.success) {
+		result.value // 5
+	} else {
+		result.error // the failure message
+	}
+}
+
+const batch = await tools.execute([
+	{ id: '1', name: 'add', arguments: { left: 2, right: 3 } }, // → { id: '1', name: 'add', success: true, value: 5 }
+	{ id: '2', name: 'ghost', arguments: {} }, // → { id: '2', name: 'ghost', success: false, error: 'tool not found: ghost' }
+])`,
+				`import type { ToolContext } from '@orkestrel/tool'
+import { createTool, createToolManager } from '@orkestrel/tool'
+
+const controller = new AbortController()
+const context: ToolContext = { signal: controller.signal, caller: { subject: 'reader' } }
+const tools = createToolManager()
+tools.add(createTool({ name: 'signal', execute: (_args, execution) => execution.signal.aborted }))
+const call = { id: 'signal-1', name: 'signal', arguments: {} }
+const result = await tools.execute(call, context)
+result // { id: 'signal-1', name: 'signal', success: true, value: false }
+controller.abort('request ended')
+const aborted = await tools.execute(call, context)
+aborted // { id: 'signal-1', name: 'signal', success: false, error: 'request ended' }`,
+				`import type { ToolErrorCode, ToolErrorContext } from '@orkestrel/tool'
+import { numberShape, objectShape } from '@orkestrel/contract'
+import { ToolError, createTool, isToolError } from '@orkestrel/tool'
+
+const tool = createTool({
+	name: 'amount',
+	contract: objectShape({ amount: numberShape() }),
+	execute: (args) => args.amount,
+})
+const context = { signal: new AbortController().signal }
+tool.execute({ amount: 3 }, context) // 3
+try {
+	tool.execute({ amount: 'invalid' }, context)
+} catch (error) {
+	if (!isToolError(error)) throw error
+	const code: ToolErrorCode = error.code
+	code // 'ARGUMENTS'
+	const details: ToolErrorContext | undefined = error.context
+	details?.faults?.[0]?.reason // 'type'
+	error.message // 'amount: type; expected number; received "invalid"'
+}
+const conflict = new ToolError('SCHEMA', 'Choose contract or parameters')
+conflict.code // 'SCHEMA'
+isToolError(conflict) // true
+isToolError(new Error('Unrelated')) // false`,
+				`import type { ToolAnnotations } from '@orkestrel/tool'
+import { createTool, toolToDefinition } from '@orkestrel/tool'
+
+const annotations: ToolAnnotations = { pure: true, untrusted: false, consequential: false }
+const tool = createTool({
+	name: 'echo',
+	title: 'Echo',
+	description: 'Return the supplied value unchanged.',
+	summary: 'Echo a value.',
+	annotations,
+	execute: (args) => args.value,
+})
+const definition = toolToDefinition(tool)
+definition.title // 'Echo'
+definition.description // 'Echo a value.'
+definition.annotations === annotations // true`,
+			])
+		})
 		// The anatomy fence's tool, built once. Both flagship fences register this same tool.
 		const add = createTool({
 			name: 'add',
@@ -186,7 +317,21 @@ await new GuideCommand({
 			])
 
 			expect(tools.count).toBe(3)
+			expect(tools.tool('add')).toBe(add)
 			expect(tools.tools().map((tool) => tool.name)).toEqual(['add', 'echo', 'now'])
+			expect(tools.definitions()).toEqual([
+				{
+					name: 'add',
+					description: 'Add two numbers.',
+					parameters: {
+						type: 'object',
+						properties: { left: { type: 'number' }, right: { type: 'number' } },
+						required: ['left', 'right'],
+					},
+				},
+				{ name: 'echo' },
+				{ name: 'now', description: 'Current epoch milliseconds.' },
+			])
 			expect(tools.remove('echo')).toBe(true)
 			expect(tools.remove(['now', 'ghost'])).toBe(false)
 
@@ -206,16 +351,13 @@ await new GuideCommand({
 		})
 
 		it('guards, executes, and batches exactly as the calls fence claims', async () => {
-			// The registry fence ends on `tools.clear()`, so a literal sequential transcription
-			// would answer `tool not found: add`. Registering `add` again is what makes this the
-			// case the calls fence documents.
+			// The calls fence registers `add` again after the registry fence clears it.
 			const tools = createToolManager()
 			tools.add(add)
 			const incoming: unknown = {
 				id: 'call-1',
 				name: 'add',
 				arguments: { left: 2, right: 3 },
-				caller: { subject: 'user-42' },
 			}
 
 			expect(isToolCall(incoming)).toBe(true)
@@ -236,6 +378,79 @@ await new GuideCommand({
 				{ id: '1', name: 'add', success: true, value: 5 },
 				{ id: '2', name: 'ghost', success: false, error: 'tool not found: ghost' },
 			])
+		})
+
+		it('propagates context and refuses an abort exactly as the execution context fence claims', async () => {
+			const controller = new AbortController()
+			const context = { signal: controller.signal, caller: { subject: 'reader' } }
+			const tools = createToolManager()
+			tools.add(
+				createTool({ name: 'signal', execute: (_args, execution) => execution.signal.aborted }),
+			)
+			const call = { id: 'signal-1', name: 'signal', arguments: {} }
+
+			expect(await tools.execute(call, context)).toEqual({
+				id: 'signal-1',
+				name: 'signal',
+				success: true,
+				value: false,
+			})
+			controller.abort('request ended')
+			expect(await tools.execute(call, context)).toEqual({
+				id: 'signal-1',
+				name: 'signal',
+				success: false,
+				error: 'request ended',
+			})
+			expect(guideText).toContain(
+				"aborted // { id: 'signal-1', name: 'signal', success: false, error: 'request ended' }",
+			)
+		})
+
+		it('validates and narrows errors exactly as the contract fence claims', () => {
+			const tool = createTool({
+				name: 'amount',
+				contract: objectShape({ amount: numberShape() }),
+				execute: (args) => args.amount,
+			})
+			const context = { signal: new AbortController().signal }
+			expect(tool.execute({ amount: 3 }, context)).toBe(3)
+			expect.assertions(9)
+			try {
+				tool.execute({ amount: 'invalid' }, context)
+			} catch (error) {
+				if (!isToolError(error)) throw error
+				expect(error.code).toBe('ARGUMENTS')
+				expect(error.context?.faults?.[0]?.reason).toBe('type')
+				expect(error.message).toBe('amount: type; expected number; received "invalid"')
+			}
+			const conflict = new ToolError('SCHEMA', 'Choose contract or parameters')
+			expect(conflict.code).toBe('SCHEMA')
+			expect(isToolError(conflict)).toBe(true)
+			expect(isToolError(new Error('Unrelated'))).toBe(false)
+			expect(guideText).toContain("code // 'ARGUMENTS'")
+			expect(guideText).toContain(
+				`error.message // 'amount: type; expected number; received "invalid"'`,
+			)
+		})
+
+		it('projects metadata exactly as the advertising fence claims', () => {
+			const annotations = { pure: true, untrusted: false, consequential: false }
+			const tool = createTool({
+				name: 'echo',
+				title: 'Echo',
+				description: 'Return the supplied value unchanged.',
+				summary: 'Echo a value.',
+				annotations,
+				execute: (args) => args.value,
+			})
+			const definition = toolToDefinition(tool)
+
+			expect(definition.title).toBe('Echo')
+			expect(definition.description).toBe('Echo a value.')
+			expect(definition.annotations).toBe(annotations)
+			expect(guideText).toContain("definition.title // 'Echo'")
+			expect(guideText).toContain('definition.annotations === annotations // true')
 		})
 
 		it('carries the calls fence lines the transcription copies', () => {

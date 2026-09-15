@@ -1,5 +1,6 @@
 import type {
 	ToolCall,
+	ToolContext,
 	ToolDefinition,
 	ToolInterface,
 	ToolManagerInterface,
@@ -17,7 +18,9 @@ import { toolToDefinition } from '../helpers.js'
  * Unknown names and handler throws resolve to error results; a call whose `id` or `name`
  * accessor throws when read makes its call, and the batch holding it, reject. Batch
  * execution preserves input order and isolates each call whose members are plain
- * values. Optional consumer-asserted caller context is forwarded without verification.
+ * values. Execution context is shared across a batch and forwarded unchanged. An
+ * omitted context receives a non-aborted signal. A signal aborted before handler
+ * entry produces an error result; later cancellation is the handler's responsibility.
  *
  * @example
  * ```ts
@@ -61,11 +64,14 @@ export class ToolManager implements ToolManagerInterface {
 		return [...this.#tools.values()].map((tool) => toolToDefinition(tool))
 	}
 
-	execute(call: ToolCall): Promise<ToolResult>
-	execute(calls: readonly ToolCall[]): Promise<readonly ToolResult[]>
-	execute(call: ToolCall | readonly ToolCall[]): Promise<ToolResult | readonly ToolResult[]> {
-		if (isArray(call)) return Promise.all(call.map((one) => this.#run(one)))
-		return this.#run(call)
+	execute(call: ToolCall, context?: ToolContext): Promise<ToolResult>
+	execute(calls: readonly ToolCall[], context?: ToolContext): Promise<readonly ToolResult[]>
+	execute(
+		call: ToolCall | readonly ToolCall[],
+		context: ToolContext = { signal: new AbortController().signal },
+	): Promise<ToolResult | readonly ToolResult[]> {
+		if (isArray(call)) return Promise.all(call.map((one) => this.#run(one, context)))
+		return this.#run(call, context)
 	}
 
 	remove(name: string): boolean
@@ -85,7 +91,7 @@ export class ToolManager implements ToolManagerInterface {
 		this.#tools.clear()
 	}
 
-	async #run(call: ToolCall): Promise<ToolResult> {
+	async #run(call: ToolCall, context: ToolContext): Promise<ToolResult> {
 		const tool = this.#tools.get(call.name)
 		if (tool === undefined) {
 			return {
@@ -96,10 +102,16 @@ export class ToolManager implements ToolManagerInterface {
 			}
 		}
 		try {
-			const caller = call.caller
-			const value = await (caller === undefined
-				? tool.execute(call.arguments)
-				: tool.execute(call.arguments, caller))
+			if (context.signal.aborted) {
+				const reason: unknown = context.signal.reason
+				return {
+					id: call.id,
+					name: call.name,
+					success: false,
+					error: reason === undefined ? 'aborted' : String(reason),
+				}
+			}
+			const value = await tool.execute(call.arguments, context)
 			return { id: call.id, name: call.name, success: true, value }
 		} catch (error) {
 			const message = attempt(() =>

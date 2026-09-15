@@ -1,6 +1,8 @@
+import type { ToolContext } from '@src/core'
+import { numberShape, objectShape } from '@orkestrel/contract'
 import { Tool, ToolManager } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createRecorder, requireValue, waitForDelay } from '@orkestrel/test'
+import { createRecorder, requireValue, waitForAbort, waitForDelay } from '@orkestrel/test'
 import { createToolCall } from '../../../setup.js'
 
 describe('ToolManager registry', () => {
@@ -171,58 +173,98 @@ describe('ToolManager execution', () => {
 		expect(seen[1]).toBe(empty)
 	})
 
-	it('forwards caller context verbatim and absence as undefined', async () => {
-		const recorder = createRecorder<[args: Readonly<Record<string, unknown>>, caller: unknown]>()
+	it('mints a non-aborted signal when execution context is omitted', async () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>, ToolContext]>()
 		const manager = new ToolManager()
+		manager.add(new Tool({ name: 'capture', execute: recorder.handler }))
+
+		await manager.execute(createToolCall('capture'))
+		await manager.execute(createToolCall('capture'))
+
+		const first = requireValue(recorder.calls[0]?.[1])
+		const second = requireValue(recorder.calls[1]?.[1])
+		expect(first.signal).toBeInstanceOf(AbortSignal)
+		expect(first.signal.aborted).toBe(false)
+		expect(first.caller).toBeUndefined()
+		expect(second.signal).not.toBe(first.signal)
+	})
+
+	it('forwards a supplied context and caller identity unchanged', async () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>, ToolContext]>()
+		const manager = new ToolManager()
+		manager.add(new Tool({ name: 'capture', execute: recorder.handler }))
+		const context: ToolContext = {
+			signal: new AbortController().signal,
+			caller: { subject: 'reader' },
+		}
+
+		await manager.execute(createToolCall('capture'), context)
+
+		expect(recorder.calls[0]?.[1]).toBe(context)
+		expect(recorder.calls[0]?.[1].caller).toBe(context.caller)
+	})
+
+	it('delivers an abort to a handler during execution', async () => {
+		const controller = new AbortController()
+		const manager = new ToolManager()
+		const entered = createRecorder<[]>()
 		manager.add(
 			new Tool({
-				name: 'capture',
-				execute: (args, caller) => {
-					recorder.handler(args, caller)
-					return args.value
+				name: 'wait',
+				execute: async (_args, context) => {
+					entered.handler()
+					await waitForAbort(context.signal)
+					return context.signal.reason
 				},
 			}),
 		)
-		const absent = { value: 'absent' }
-		const present = { value: 'present' }
-		const caller = { subject: 'user-42' }
 
-		const results = await manager.execute([
-			createToolCall('capture', absent, 'absent'),
-			{ id: 'present', name: 'capture', arguments: present, caller },
-		])
+		const pending = manager.execute(createToolCall('wait'), { signal: controller.signal })
+		expect(entered.count).toBe(1)
+		await waitForDelay(10)
+		controller.abort('stopped waiting')
 
-		expect(recorder.calls).toEqual([
-			[absent, undefined],
-			[present, caller],
-		])
-		expect(recorder.count).toBe(2)
-		expect(recorder.calls[0]?.[1]).toBeUndefined()
-		expect(recorder.calls[1]?.[1]).toBe(caller)
-		expect(results).toEqual([
-			{ id: 'absent', name: 'capture', success: true, value: 'absent' },
-			{ id: 'present', name: 'capture', success: true, value: 'present' },
-		])
+		await expect(pending).resolves.toEqual({
+			id: 'call',
+			name: 'wait',
+			success: true,
+			value: 'stopped waiting',
+		})
 	})
 
-	it('keeps an existing one-argument handler additive', async () => {
-		const execute = (args: Readonly<Record<string, unknown>>): unknown => args.value
+	it('refuses an already-aborted signal without entering the handler', async () => {
+		const controller = new AbortController()
+		controller.abort('request ended')
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>, ToolContext]>()
 		const manager = new ToolManager()
-		manager.add(new Tool({ name: 'echo', execute }))
+		manager.add(new Tool({ name: 'capture', execute: recorder.handler }))
 
 		await expect(
-			manager.execute({
-				id: 'additive',
-				name: 'echo',
-				arguments: { value: 'unchanged' },
-				caller: { subject: 'user-42' },
+			manager.execute(createToolCall('capture'), { signal: controller.signal }),
+		).resolves.toEqual({ id: 'call', name: 'capture', success: false, error: 'request ended' })
+		expect(recorder.count).toBe(0)
+	})
+
+	it('contains contract refusal as a failure naming the argument path and reason', async () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>, ToolContext]>()
+		const manager = new ToolManager()
+		manager.add(
+			new Tool({
+				name: 'amount',
+				contract: objectShape({ amount: numberShape() }),
+				execute: recorder.handler,
 			}),
-		).resolves.toEqual({
-			id: 'additive',
-			name: 'echo',
-			success: true,
-			value: 'unchanged',
-		})
+		)
+
+		await expect(manager.execute(createToolCall('amount', { amount: 'invalid' }))).resolves.toEqual(
+			{
+				id: 'call',
+				name: 'amount',
+				success: false,
+				error: 'amount: type; expected number; received "invalid"',
+			},
+		)
+		expect(recorder.count).toBe(0)
 	})
 
 	it('preserves falsy, null, and undefined success values', async () => {
@@ -479,6 +521,135 @@ describe('ToolManager execution', () => {
 })
 
 describe('ToolManager batch execution', () => {
+	it('shares one context across a batch and preserves order beside a thrown handler', async () => {
+		const recorder = createRecorder<[ToolContext]>()
+		const manager = new ToolManager()
+		manager.add(
+			new Tool({
+				name: 'batch',
+				execute: async (args, context) => {
+					recorder.handler(context)
+					if (args.value === 'fail') throw new Error('batch failure')
+					if (args.value === 'slow') await waitForDelay(10)
+					return args.value
+				},
+			}),
+		)
+		const context: ToolContext = { signal: new AbortController().signal, caller: 'reader' }
+		const calls = [
+			createToolCall('batch', { value: 'slow' }, 'slow'),
+			createToolCall('batch', { value: 'fail' }, 'fail'),
+			createToolCall('batch', { value: 'fast' }, 'fast'),
+		]
+
+		const supplied = await manager.execute(calls, context)
+		const minted = await manager.execute(calls)
+
+		expect(supplied).toEqual([
+			{ id: 'slow', name: 'batch', success: true, value: 'slow' },
+			{ id: 'fail', name: 'batch', success: false, error: 'batch failure' },
+			{ id: 'fast', name: 'batch', success: true, value: 'fast' },
+		])
+		expect(minted).toEqual(supplied)
+		expect(recorder.calls.slice(0, 3).every(([received]) => received === context)).toBe(true)
+		const shared = requireValue(recorder.calls[3]?.[0])
+		expect(shared.signal.aborted).toBe(false)
+		expect(recorder.calls.slice(3).every(([received]) => received === shared)).toBe(true)
+	})
+
+	it('refuses later batch handlers after a synchronous abort inside dispatch', async () => {
+		const controller = new AbortController()
+		const entered = createRecorder<[]>()
+		const manager = new ToolManager()
+		manager.add([
+			new Tool({
+				name: 'abort',
+				execute: () => {
+					controller.abort('batch ended')
+					return 'done'
+				},
+			}),
+			new Tool({ name: 'later', execute: entered.handler }),
+		])
+
+		await expect(
+			manager.execute([createToolCall('abort'), createToolCall('later')], {
+				signal: controller.signal,
+			}),
+		).resolves.toEqual([
+			{ id: 'call', name: 'abort', success: true, value: 'done' },
+			{ id: 'call', name: 'later', success: false, error: 'batch ended' },
+		])
+		expect(entered.count).toBe(0)
+	})
+
+	it('enters and succeeds in a later sibling when an earlier handler aborts asynchronously', async () => {
+		const controller = new AbortController()
+		const entered = createRecorder<[]>()
+		const manager = new ToolManager()
+		manager.add([
+			new Tool({
+				name: 'abort',
+				execute: async () => {
+					await waitForDelay(1)
+					controller.abort('batch ended')
+					return 'done'
+				},
+			}),
+			new Tool({
+				name: 'later',
+				execute: () => {
+					entered.handler()
+					return 'ran'
+				},
+			}),
+		])
+
+		const pending = manager.execute([createToolCall('abort'), createToolCall('later')], {
+			signal: controller.signal,
+		})
+		expect(entered.count).toBe(1)
+		expect(controller.signal.aborted).toBe(false)
+		await expect(pending).resolves.toEqual([
+			{ id: 'call', name: 'abort', success: true, value: 'done' },
+			{ id: 'call', name: 'later', success: true, value: 'ran' },
+		])
+		expect(controller.signal.aborted).toBe(true)
+	})
+
+	it('lets a sibling observe the signal after an asynchronous batch abort', async () => {
+		const controller = new AbortController()
+		const entered = createRecorder<[boolean]>()
+		const manager = new ToolManager()
+		manager.add([
+			new Tool({
+				name: 'abort',
+				execute: async () => {
+					await waitForDelay(1)
+					controller.abort('batch ended')
+					return 'done'
+				},
+			}),
+			new Tool({
+				name: 'observe',
+				execute: async (_args, context) => {
+					entered.handler(context.signal.aborted)
+					await waitForAbort(context.signal)
+					return context.signal.aborted
+				},
+			}),
+		])
+
+		const pending = manager.execute([createToolCall('abort'), createToolCall('observe')], {
+			signal: controller.signal,
+		})
+		expect(entered.calls).toEqual([[false]])
+		await expect(pending).resolves.toEqual([
+			{ id: 'call', name: 'abort', success: true, value: 'done' },
+			{ id: 'call', name: 'observe', success: true, value: true },
+		])
+	})
+
 	it('correlates mixed results by id in input order', async () => {
 		const manager = new ToolManager()
 		manager.add([

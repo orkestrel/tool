@@ -7,11 +7,11 @@ describe('isToolCall', () => {
 		expect(isToolCall({ id: '2', name: 'search', arguments: { query: 'birds' } })).toBe(true)
 	})
 
-	it('accepts opaque caller context without reading it', () => {
+	it('ignores extra caller fields without reading them', () => {
 		const call = { id: '1', name: 'search', arguments: {} }
 		Object.defineProperty(call, 'caller', {
 			get: () => {
-				throw new Error('caller context is opaque')
+				throw new Error('extra fields are unread')
 			},
 		})
 

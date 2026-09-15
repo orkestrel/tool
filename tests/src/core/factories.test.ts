@@ -10,7 +10,7 @@ describe('tool factories', () => {
 		})
 
 		expect(tool).toBeInstanceOf(Tool)
-		expect(tool.execute({ value: 'hello' })).toBe('hello')
+		expect(tool.execute({ value: 'hello' }, { signal: new AbortController().signal })).toBe('hello')
 	})
 
 	it('creates an empty working registry', async () => {
