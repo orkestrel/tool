@@ -1,4 +1,9 @@
-import type { ToolInterface, ToolManagerInterface, ToolOptions } from './types.js'
+import type {
+	ToolInterface,
+	ToolManagerInterface,
+	ToolManagerOptions,
+	ToolOptions,
+} from './types.js'
 import { Tool } from './tools/Tool.js'
 import { ToolManager } from './tools/ToolManager.js'
 
@@ -39,6 +44,7 @@ export function createTool(options: ToolOptions): ToolInterface {
  * per-call error isolation, returned as a `ToolManagerInterface` so a caller holds the
  * published contract rather than the `ToolManager` class.
  *
+ * @param options - The initial registry listeners and listener-error handler
  * @returns A registry bound to no tools
  *
  * @example
@@ -54,6 +60,6 @@ export function createTool(options: ToolOptions): ToolInterface {
  * })
  * ```
  */
-export function createToolManager(): ToolManagerInterface {
-	return new ToolManager()
+export function createToolManager(options?: ToolManagerOptions): ToolManagerInterface {
+	return new ToolManager(options)
 }

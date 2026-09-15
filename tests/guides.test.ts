@@ -286,6 +286,23 @@ const definition = toolToDefinition(tool)
 definition.title // 'Echo'
 definition.description // 'Echo a value.'
 definition.annotations === annotations // true`,
+				`import { createTool, createToolManager } from '@orkestrel/tool'
+
+const events: string[] = []
+const tools = createToolManager({
+	on: {
+		add: () => events.push('add'),
+		remove: () => events.push('remove'),
+		clear: () => events.push('clear'),
+	},
+})
+tools.add(createTool({ name: 'echo', execute: (args) => args.value }))
+tools.add(createTool({ name: 'echo', execute: () => 'replacement' }))
+tools.remove('echo')
+tools.clear()
+events // ['add', 'remove', 'add', 'remove', 'clear']
+tools.destroy()
+tools.emitter.destroyed // true`,
 			])
 		})
 		// The anatomy fence's tool, built once. Both flagship fences register this same tool.
@@ -451,6 +468,24 @@ definition.annotations === annotations // true`,
 			expect(definition.annotations).toBe(annotations)
 			expect(guideText).toContain("definition.title // 'Echo'")
 			expect(guideText).toContain('definition.annotations === annotations // true')
+		})
+
+		it('observes registry changes exactly as the observation fence claims', () => {
+			const events: string[] = []
+			const tools = createToolManager({
+				on: {
+					add: () => events.push('add'),
+					remove: () => events.push('remove'),
+					clear: () => events.push('clear'),
+				},
+			})
+			tools.add(createTool({ name: 'echo', execute: (args) => args.value }))
+			tools.add(createTool({ name: 'echo', execute: () => 'replacement' }))
+			tools.remove('echo')
+			tools.clear()
+			expect(events).toEqual(['add', 'remove', 'add', 'remove', 'clear'])
+			tools.destroy()
+			expect(tools.emitter.destroyed).toBe(true)
 		})
 
 		it('carries the calls fence lines the transcription copies', () => {

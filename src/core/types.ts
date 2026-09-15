@@ -1,4 +1,5 @@
 import type { ContractShape, Failure, Fault, Success } from '@orkestrel/contract'
+import type { EmitterErrorHandler, EmitterHooks, EmitterInterface } from '@orkestrel/emitter'
 
 /** Carries the signal and consumer-asserted identity for an execution. */
 export interface ToolContext {
@@ -173,6 +174,37 @@ export interface ToolOptions {
 }
 
 /**
+ * Names the events a tool registry publishes.
+ *
+ * @remarks
+ * Each event describes the registry at the moment it is published. A listener that
+ * mutates the registry re-enters synchronously; its events publish before the outer
+ * call resumes.
+ */
+export type ToolManagerEventMap = {
+	/** Fires after a tool is registered, with the registered instance. */
+	readonly add: readonly [tool: ToolInterface]
+	/**
+	 * Fires after a tool is removed, with the removed instance.
+	 *
+	 * @remarks
+	 * A replacement publishes this event with the replacement already installed.
+	 * A listener must not read absence from the map to confirm a removal.
+	 */
+	readonly remove: readonly [tool: ToolInterface]
+	/** Fires once per `clear`, with the tools it removed in registration order. */
+	readonly clear: readonly [tools: readonly ToolInterface[]]
+}
+
+/** Configures a tool registry's initial listeners and error handling. */
+export interface ToolManagerOptions {
+	/** Registers the initial listeners for registry changes. */
+	readonly on?: EmitterHooks<ToolManagerEventMap>
+	/** Receives listener throws with the event name, without interrupting sibling listeners. */
+	readonly error?: EmitterErrorHandler
+}
+
+/**
  * Represents a registry of executable tools with per-call error isolation.
  *
  * @remarks
@@ -181,10 +213,16 @@ export interface ToolOptions {
  * resolves to a {@link ToolResult}; missing tools and thrown handlers become error
  * results, and a call whose `id` or `name` accessor throws when read makes `execute`
  * reject instead. Batch execution preserves input order.
+ * Registry changes publish synchronously through the owned emitter. A replacement
+ * publishes `remove` for the previous instance, then `add` if the map still holds
+ * that exact replacement after the removal listeners return.
+ * A destroyed registry publishes nothing; later additions still update its tool map.
  */
 export interface ToolManagerInterface {
 	/** Reports how many tools are registered. */
 	readonly count: number
+	/** Publishes the registry's `add`, `remove`, and `clear` events. */
+	readonly emitter: EmitterInterface<ToolManagerEventMap>
 	/**
 	 * Registers one tool.
 	 *
@@ -259,4 +297,17 @@ export interface ToolManagerInterface {
 	 * @returns Nothing
 	 */
 	clear(): void
+	/**
+	 * Removes every tool and releases the emitter's listeners.
+	 *
+	 * @remarks
+	 * Publishes `clear` before destroying the emitter. A destroyed registry publishes
+	 * nothing, including when a later `add` updates its tool map.
+	 * Returns with an empty registry even if a `clear` listener adds a tool.
+	 * An emission already underway delivers to its remaining snapshotted listeners,
+	 * even when a listener destroys the registry before its siblings run.
+	 *
+	 * @returns Nothing
+	 */
+	destroy(): void
 }

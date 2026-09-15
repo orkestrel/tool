@@ -1,8 +1,14 @@
-import type { ToolContext } from '@src/core'
+import type { ToolContext, ToolInterface, ToolManagerEventMap } from '@src/core'
 import { numberShape, objectShape } from '@orkestrel/contract'
 import { Tool, ToolManager } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createRecorder, requireValue, waitForAbort, waitForDelay } from '@orkestrel/test'
+import {
+	createRecorder,
+	createRecorders,
+	requireValue,
+	waitForAbort,
+	waitForDelay,
+} from '@orkestrel/test'
 import { createToolCall } from '../../../setup.js'
 
 describe('ToolManager registry', () => {
@@ -119,6 +125,353 @@ describe('ToolManager registry', () => {
 			{ name: 'bare' },
 		])
 		expect(manager.tool('summary')?.description).toBe('A detailed explanation.')
+	})
+})
+
+describe('ToolManager events', () => {
+	it('emits add with the exact tool after registration', () => {
+		const manager = new ToolManager()
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+		const registered = createRecorder<readonly [boolean]>()
+		manager.emitter.on('add', (tool) => registered.handler(manager.tool(tool.name) === tool))
+		const tool = new Tool({ name: 'echo', execute: () => 'echo' })
+
+		manager.add(tool)
+
+		expect(recorders.add.calls).toEqual([[tool]])
+		expect(recorders.add.calls[0]?.[0]).toBe(tool)
+		expect(registered.calls).toEqual([[true]])
+		expect(recorders.remove.calls).toEqual([])
+		expect(recorders.clear.calls).toEqual([])
+	})
+
+	it('emits add for each batch tool in array order and nothing for an empty batch', () => {
+		const manager = new ToolManager()
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+		const first = new Tool({ name: 'first', execute: () => 1 })
+		const second = new Tool({ name: 'second', execute: () => 2 })
+		const registered = createRecorder<readonly [boolean]>()
+		manager.emitter.on('add', (tool) => registered.handler(manager.tool(tool.name) === tool))
+
+		manager.add([])
+		expect(recorders.add.calls).toEqual([])
+		manager.add([second, first])
+
+		expect(recorders.add.calls).toEqual([[second], [first]])
+		expect(registered.calls).toEqual([[true], [true]])
+		expect(manager.tools()).toEqual([second, first])
+		expect(recorders.remove.calls).toEqual([])
+		expect(recorders.clear.calls).toEqual([])
+	})
+
+	it('emits remove before add for replacements while preserving registration position', () => {
+		const manager = new ToolManager()
+		const previous = new Tool({ name: 'echo', execute: () => 'previous' })
+		const sibling = new Tool({ name: 'sibling', execute: () => 'sibling' })
+		const replacement = new Tool({ name: 'echo', execute: () => 'replacement' })
+		manager.add([previous, sibling])
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+		const order = createRecorder<readonly [string, ToolInterface]>()
+		const installed = createRecorder<readonly [ToolInterface | undefined]>()
+		manager.emitter.on('remove', (tool) => installed.handler(manager.tool(tool.name)))
+		manager.emitter.on('remove', (tool) => order.handler('remove', tool))
+		manager.emitter.on('add', (tool) => order.handler('add', tool))
+
+		manager.add(replacement)
+		manager.add([previous, replacement])
+
+		expect(order.calls).toEqual([
+			['remove', previous],
+			['add', replacement],
+			['remove', replacement],
+			['add', previous],
+			['remove', previous],
+			['add', replacement],
+		])
+		expect(recorders.remove.calls).toEqual([[previous], [replacement], [previous]])
+		expect(recorders.add.calls).toEqual([[replacement], [previous], [replacement]])
+		expect(recorders.remove.calls[0]?.[0]).toBe(previous)
+		expect(installed.calls[0]?.[0]).toBe(replacement)
+		expect(installed.calls[1]?.[0]).toBe(previous)
+		expect(installed.calls[2]?.[0]).toBe(replacement)
+		expect(recorders.add.calls[0]?.[0]).toBe(replacement)
+		expect(recorders.clear.calls).toEqual([])
+		expect(manager.tool('echo')).toBe(replacement)
+		expect(manager.tools()).toEqual([replacement, sibling])
+	})
+
+	it('emits remove after deleting the exact tool and stays silent for a missing name', () => {
+		const manager = new ToolManager()
+		const tool = new Tool({ name: 'echo', execute: () => 'echo' })
+		manager.add(tool)
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+		const remaining = createRecorder<readonly [ToolInterface | undefined]>()
+		manager.emitter.on('remove', (removed) => remaining.handler(manager.tool(removed.name)))
+
+		expect(manager.remove('echo')).toBe(true)
+		expect(manager.remove('echo')).toBe(false)
+		expect(recorders.remove.calls).toEqual([[tool]])
+		expect(recorders.remove.calls[0]?.[0]).toBe(tool)
+		expect(remaining.calls).toEqual([[undefined]])
+		expect(recorders.add.calls).toEqual([])
+		expect(recorders.clear.calls).toEqual([])
+	})
+
+	it('emits batch removals in requested order and reports missing or repeated names', () => {
+		const manager = new ToolManager()
+		const first = new Tool({ name: 'first', execute: () => 1 })
+		const second = new Tool({ name: 'second', execute: () => 2 })
+		manager.add([first, second])
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+		const remaining = createRecorder<readonly [ToolInterface | undefined]>()
+		manager.emitter.on('remove', (tool) => remaining.handler(manager.tool(tool.name)))
+
+		expect(manager.remove(['second', 'missing', 'second', 'first'])).toBe(false)
+		expect(manager.remove([])).toBe(true)
+		expect(recorders.remove.calls).toEqual([[second], [first]])
+		expect(remaining.calls).toEqual([[undefined], [undefined]])
+		expect(recorders.add.calls).toEqual([])
+		expect(recorders.clear.calls).toEqual([])
+		expect(manager.tools()).toEqual([])
+	})
+
+	it('emits one clear snapshot in registration order after emptying the registry', () => {
+		const manager = new ToolManager()
+		const first = new Tool({ name: 'first', execute: () => 1 })
+		const second = new Tool({ name: 'second', execute: () => 2 })
+		manager.add([second, first])
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+		const remaining = createRecorder<readonly [number]>()
+		manager.emitter.on('clear', () => remaining.handler(manager.count))
+
+		manager.clear()
+
+		expect(recorders.clear.calls).toEqual([[[second, first]]])
+		expect(recorders.clear.calls[0]?.[0][0]).toBe(second)
+		expect(recorders.clear.calls[0]?.[0][1]).toBe(first)
+		expect(remaining.calls).toEqual([[0]])
+		expect(recorders.add.calls).toEqual([])
+		expect(recorders.remove.calls).toEqual([])
+		manager.add(first)
+		expect(recorders.clear.calls).toEqual([[[second, first]]])
+	})
+
+	it('emits one empty clear event for every clear of an empty registry', () => {
+		const manager = new ToolManager()
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+
+		manager.clear()
+		manager.clear()
+
+		expect(recorders.clear.calls).toEqual([[[]], [[]]])
+		expect(recorders.add.calls).toEqual([])
+		expect(recorders.remove.calls).toEqual([])
+		const first = new Tool({ name: 'first', execute: () => 1 })
+		const second = new Tool({ name: 'second', execute: () => 2 })
+		manager.add([second, first])
+		manager.clear()
+		expect(recorders.clear.calls).toEqual([[[]], [[]], [[second, first]]])
+		expect(recorders.clear.calls[2]?.[0][0]).toBe(second)
+		expect(recorders.clear.calls[2]?.[0][1]).toBe(first)
+	})
+
+	it('replacement reentry preserves publication consistency', () => {
+		const manager = new ToolManager()
+		const previous = new Tool({ name: 'echo', execute: () => 'previous' })
+		const replacement = new Tool({ name: 'echo', execute: () => 'replacement' })
+		manager.add(previous)
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+		const registered = createRecorder<readonly [boolean]>()
+		const order = createRecorder<readonly [string]>()
+		manager.emitter.on('remove', () => order.handler('remove'))
+		manager.emitter.once('remove', () => {
+			order.handler('enter')
+			manager.remove('echo')
+			order.handler('resume')
+		})
+		manager.emitter.on('add', (tool) => registered.handler(manager.tool(tool.name) === tool))
+
+		manager.add(replacement)
+
+		expect(recorders.remove.calls[0]?.[0]).toBe(previous)
+		expect(recorders.remove.calls[1]?.[0]).toBe(replacement)
+		expect(recorders.add.calls).toEqual([])
+		expect(registered.calls).toEqual([])
+		expect(recorders.clear.calls).toEqual([])
+		expect(manager.tools()).toEqual([])
+		expect(order.calls).toEqual([['remove'], ['enter'], ['remove'], ['resume']])
+
+		manager.add(previous)
+		recorders.add.clear()
+		registered.clear()
+		manager.add(replacement)
+		expect(recorders.add.calls[0]?.[0]).toBe(replacement)
+		expect(registered.calls).toEqual([[true]])
+		expect(manager.tool('echo')).toBe(replacement)
+	})
+
+	it('publishes the third instance a removal listener installs during a replacement', () => {
+		const manager = new ToolManager()
+		const previous = new Tool({ name: 'echo', execute: () => 'previous' })
+		const replacement = new Tool({ name: 'echo', execute: () => 'replacement' })
+		const third = new Tool({ name: 'echo', execute: () => 'third' })
+		manager.add(previous)
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove'],
+		)
+		manager.emitter.once('remove', () => manager.add(third))
+
+		manager.add(replacement)
+
+		expect(recorders.remove.calls[0]?.[0]).toBe(previous)
+		expect(recorders.remove.calls[1]?.[0]).toBe(replacement)
+		expect(recorders.remove.calls.length).toBe(2)
+		expect(recorders.add.calls).toEqual([[third]])
+		expect(manager.tool('echo')).toBe(third)
+	})
+
+	it('destroy finishes with an empty registry', () => {
+		const manager = new ToolManager()
+		const tool = new Tool({ name: 'echo', execute: () => 'echo' })
+		manager.add(tool)
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+		manager.emitter.once('clear', () => manager.add(tool))
+
+		manager.destroy()
+
+		expect(recorders.clear.calls).toEqual([[[tool]]])
+		expect(recorders.add.calls[0]?.[0]).toBe(tool)
+		expect(recorders.remove.calls).toEqual([])
+		expect(manager.emitter.destroyed).toBe(true)
+		expect(manager.count).toBe(0)
+		expect(manager.tools()).toEqual([])
+	})
+
+	it('a listener destroying the registry mid-emit does not stop its siblings', () => {
+		const manager = new ToolManager()
+		const tool = new Tool({ name: 'echo', execute: () => 'echo' })
+		const readings = createRecorder<readonly [boolean]>()
+		manager.emitter.on('add', () => manager.destroy())
+		manager.emitter.on('add', () => readings.handler(manager.emitter.destroyed))
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+
+		manager.add(tool)
+
+		expect(readings.calls).toEqual([[true]])
+		expect(recorders.add.calls[0]?.[0]).toBe(tool)
+		expect(recorders.clear.calls[0]?.[0][0]).toBe(tool)
+		expect(recorders.remove.calls).toEqual([])
+		expect(manager.count).toBe(0)
+	})
+
+	it('destroys the emitter after clearing the registry and publishing the removed tools', () => {
+		const manager = new ToolManager()
+		const tool = new Tool({ name: 'echo', execute: () => 'echo' })
+		manager.add(tool)
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+		const clearing = createRecorder<readonly [number, boolean]>()
+		manager.emitter.on('clear', () => clearing.handler(manager.count, manager.emitter.destroyed))
+
+		manager.destroy()
+
+		expect(recorders.clear.calls).toEqual([[[tool]]])
+		expect(clearing.calls).toEqual([[0, false]])
+		expect(manager.tools()).toEqual([])
+		expect(manager.emitter.destroyed).toBe(true)
+		expect(manager.emitter.count()).toBe(0)
+		expect(recorders.add.calls).toEqual([])
+		expect(recorders.remove.calls).toEqual([])
+		manager.destroy()
+		expect(recorders.clear.calls).toEqual([[[tool]]])
+	})
+
+	it('publishes nothing for a later add after destroy while updating the registry', () => {
+		const manager = new ToolManager()
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+		const tool = new Tool({ name: 'echo', execute: () => 'echo' })
+		manager.add(tool)
+		expect(recorders.add.calls).toEqual([[tool]])
+		manager.destroy()
+		recorders.add.clear()
+		recorders.clear.clear()
+		const later = createRecorder<readonly [ToolInterface]>()
+		manager.emitter.on('add', later.handler)
+
+		manager.add(tool)
+
+		expect(manager.tool('echo')).toBe(tool)
+		expect(recorders.add.calls).toEqual([])
+		expect(recorders.remove.calls).toEqual([])
+		expect(recorders.clear.calls).toEqual([])
+		expect(later.calls).toEqual([])
+		manager.destroy()
+		expect(manager.count).toBe(0)
+		expect(recorders.clear.calls).toEqual([])
+	})
+
+	it('executes single and batch calls without publishing registry events', async () => {
+		const manager = new ToolManager()
+		const recorders = createRecorders<ToolManagerEventMap, keyof ToolManagerEventMap>(
+			manager.emitter,
+			['add', 'remove', 'clear'],
+		)
+		const tool = new Tool({ name: 'echo', execute: (args) => args.value })
+		manager.add(tool)
+		expect(recorders.add.calls).toEqual([[tool]])
+		recorders.add.clear()
+
+		await expect(manager.execute(createToolCall('echo', { value: 'single' }))).resolves.toEqual({
+			id: 'call',
+			name: 'echo',
+			success: true,
+			value: 'single',
+		})
+		await expect(
+			manager.execute([createToolCall('echo', { value: 'batch' }), createToolCall('missing')]),
+		).resolves.toEqual([
+			{ id: 'call', name: 'echo', success: true, value: 'batch' },
+			{ id: 'call', name: 'missing', success: false, error: 'tool not found: missing' },
+		])
+		expect(recorders.add.calls).toEqual([])
+		expect(recorders.remove.calls).toEqual([])
+		expect(recorders.clear.calls).toEqual([])
 	})
 })
 
@@ -849,7 +1202,7 @@ describe('ToolManager removal', () => {
 		})
 	})
 
-	it('clears every tool and is a no-op when already empty', async () => {
+	it('clears every tool and leaves repeated clears empty', async () => {
 		const manager = new ToolManager()
 		manager.add([
 			new Tool({ name: 'a', execute: () => 0 }),

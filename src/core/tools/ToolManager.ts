@@ -1,12 +1,16 @@
+import type { EmitterInterface } from '@orkestrel/emitter'
 import type {
 	ToolCall,
 	ToolContext,
 	ToolDefinition,
 	ToolInterface,
+	ToolManagerEventMap,
 	ToolManagerInterface,
+	ToolManagerOptions,
 	ToolResult,
 } from '../types.js'
 import { attempt, isArray } from '@orkestrel/contract'
+import { Emitter } from '@orkestrel/emitter'
 import { toolToDefinition } from '../helpers.js'
 
 /**
@@ -21,6 +25,10 @@ import { toolToDefinition } from '../helpers.js'
  * values. Execution context is shared across a batch and forwarded unchanged. An
  * omitted context receives a non-aborted signal. A signal aborted before handler
  * entry produces an error result; later cancellation is the handler's responsibility.
+ * Registry changes publish synchronously. Replacements publish `remove`, then `add`
+ * if the map still holds that exact replacement after the removal listeners return.
+ * Destruction clears the tools before releasing listeners. A destroyed registry
+ * publishes nothing, even when later additions update its tool map.
  *
  * @example
  * ```ts
@@ -37,19 +45,31 @@ import { toolToDefinition } from '../helpers.js'
  */
 export class ToolManager implements ToolManagerInterface {
 	readonly #tools = new Map<string, ToolInterface>()
+	readonly #emitter: Emitter<ToolManagerEventMap>
+
+	constructor(options?: ToolManagerOptions) {
+		this.#emitter = new Emitter<ToolManagerEventMap>(options)
+	}
 
 	get count(): number {
 		return this.#tools.size
+	}
+
+	get emitter(): EmitterInterface<ToolManagerEventMap> {
+		return this.#emitter
 	}
 
 	add(tool: ToolInterface): void
 	add(tools: readonly ToolInterface[]): void
 	add(tools: ToolInterface | readonly ToolInterface[]): void {
 		if (isArray(tools)) {
-			for (const tool of tools) this.#tools.set(tool.name, tool)
+			for (const tool of tools) this.add(tool)
 			return
 		}
+		const previous = this.#tools.get(tools.name)
 		this.#tools.set(tools.name, tools)
+		if (previous !== undefined) this.#emitter.emit('remove', previous)
+		if (this.#tools.get(tools.name) === tools) this.#emitter.emit('add', tools)
 	}
 
 	tool(name: string): ToolInterface | undefined {
@@ -80,14 +100,26 @@ export class ToolManager implements ToolManagerInterface {
 		if (isArray(names)) {
 			let removed = true
 			for (const name of names) {
-				if (!this.#tools.delete(name)) removed = false
+				if (!this.remove(name)) removed = false
 			}
 			return removed
 		}
-		return this.#tools.delete(names)
+		const tool = this.#tools.get(names)
+		if (tool === undefined) return false
+		this.#tools.delete(names)
+		this.#emitter.emit('remove', tool)
+		return true
 	}
 
 	clear(): void {
+		const tools = this.tools()
+		this.#tools.clear()
+		this.#emitter.emit('clear', tools)
+	}
+
+	destroy(): void {
+		this.clear()
+		this.#emitter.destroy()
 		this.#tools.clear()
 	}
 
