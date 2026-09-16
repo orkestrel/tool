@@ -9,7 +9,7 @@ import type {
 	ToolManagerOptions,
 	ToolResult,
 } from '../types.js'
-import { attempt, isArray } from '@orkestrel/contract'
+import { attempt, isArray, isError } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
 import { toolToDefinition } from '../helpers.js'
 
@@ -146,9 +146,7 @@ export class ToolManager implements ToolManagerInterface {
 			const value = await tool.execute(call.arguments, context)
 			return { id: call.id, name: call.name, success: true, value }
 		} catch (error) {
-			const message = attempt(() =>
-				error instanceof Error ? String(error.message) : String(error),
-			)
+			const message = attempt(() => (isError(error) ? error.message : String(error)))
 			return {
 				id: call.id,
 				name: call.name,
