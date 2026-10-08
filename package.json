@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/tool",
-	"version": "0.0.18",
+	"version": "0.0.19",
 	"description": "The tool runtime for the @orkestrel line — JSON-Schema tool definitions, calls, results, executable tools, and a registry with per-call error isolation. Part of the @orkestrel line.",
 	"keywords": [
 		"agent",
@@ -70,13 +70,13 @@
 	},
 	"dependencies": {
 		"@orkestrel/contract": "^0.0.19",
-		"@orkestrel/emitter": "^0.0.11"
+		"@orkestrel/emitter": "^0.0.12"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.59.4",
 		"@orkestrel/guide": "^0.0.24",
-		"@orkestrel/probe": "^0.0.21",
-		"@orkestrel/scaffold": "^0.0.93",
+		"@orkestrel/probe": "^0.0.22",
+		"@orkestrel/scaffold": "^0.0.95",
 		"@orkestrel/test": "^0.0.24",
 		"@types/node": "^26.6.4",
 		"oxfmt": "^0.72.0",
