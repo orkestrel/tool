@@ -1,5 +1,5 @@
 import type { ToolErrorCode, ToolErrorContext } from './types.js'
-import { arrayOf, holds, INTRINSICS, isObject, isString } from '@orkestrel/contract'
+import { arrayOf, holds, INTRINSICS, isFunction, isObject, isString } from '@orkestrel/contract'
 
 /**
  * Reports a schema conflict or argument validation failure with a machine-readable code.
@@ -52,7 +52,7 @@ export function isToolError(value: unknown): value is ToolError {
 		if (code !== 'SCHEMA' && code !== 'ARGUMENTS') return false
 		const context: unknown = INTRINSICS.reflect.read(value, 'context')
 		if (context === undefined) return true
-		if (!isObject(context)) return false
+		if (!isObject(context) && !isFunction(context)) return false
 		const faults: unknown = INTRINSICS.reflect.read(context, 'faults')
 		if (faults === undefined) return true
 		return arrayOf((fault: unknown) => {

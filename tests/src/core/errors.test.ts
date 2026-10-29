@@ -3,6 +3,11 @@ import * as errors from '../../../src/core/errors.js'
 import { describe, expect, it } from 'vitest'
 
 describe('isToolError', () => {
+	it('accepts a callable context that carries the declared faults', () => {
+		const context = Object.assign(() => undefined, { faults: [] })
+		expect(isToolError(new ToolError('ARGUMENTS', 'failure', context))).toBe(true)
+	})
+
 	it('refuses an invalid indexed fault hidden by a replaced iterator', () => {
 		const faults = [42]
 		Object.defineProperty(faults, Symbol.iterator, {
