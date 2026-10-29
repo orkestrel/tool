@@ -3,6 +3,20 @@ import * as errors from '../../../src/core/errors.js'
 import { describe, expect, it } from 'vitest'
 
 describe('isToolError', () => {
+	it('refuses an invalid indexed fault hidden by a replaced iterator', () => {
+		const faults = [42]
+		Object.defineProperty(faults, Symbol.iterator, {
+			value: Array.prototype[Symbol.iterator].bind([]),
+		})
+		const error = Object.assign(new RangeError('invalid fault report'), {
+			code: 'ARGUMENTS',
+			context: { faults },
+		})
+		Object.defineProperty(error, Symbol.for('@orkestrel/tool.ToolError'), { value: error })
+
+		expect(isToolError(error)).toBe(false)
+	})
+
 	it('recognizes tool errors and rejects unrelated values', () => {
 		const context = { faults: [] }
 		const error = new ToolError('ARGUMENTS', 'invalid arguments', context)

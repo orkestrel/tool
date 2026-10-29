@@ -797,6 +797,8 @@ import { createRequire } from 'node:module'
 import * as imported from '@orkestrel/tool'
 const required = createRequire(import.meta.url)('@orkestrel/tool')
 const copied = await import(${JSON.stringify(pathToFileURL(join(copy, 'dist/src/core/index.js')).href)})
+const entries = [imported, required, copied]
+assert.equal(new Set(entries.map((entry) => entry.ToolError)).size, entries.length)
 for (const source of [imported, required, copied]) {
   const error = new source.ToolError('SCHEMA', 'invalid')
   class Derived extends source.ToolError {

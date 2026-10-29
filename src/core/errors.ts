@@ -55,8 +55,7 @@ export function isToolError(value: unknown): value is ToolError {
 		if (!isObject(context)) return false
 		const faults: unknown = INTRINSICS.reflect.read(context, 'faults')
 		if (faults === undefined) return true
-		if (!INTRINSICS.array(faults)) return false
-		return Array.from(faults).every((fault: unknown) => {
+		return arrayOf((fault: unknown) => {
 			if (!isObject(fault)) return false
 			const path: unknown = INTRINSICS.reflect.read(fault, 'path')
 			if (!isString(path) && !arrayOf(isString)(path)) return false
@@ -96,6 +95,6 @@ export function isToolError(value: unknown): value is ToolError {
 					constraint === 'integer') &&
 				(limit === undefined || typeof limit === 'number' || typeof limit === 'string')
 			)
-		})
+		})(faults)
 	})
 }
