@@ -98,11 +98,7 @@ export class ToolManager implements ToolManagerInterface {
 	remove(names: readonly string[]): boolean
 	remove(names: string | readonly string[]): boolean {
 		if (isArray(names)) {
-			let removed = true
-			for (const name of names) {
-				if (!this.remove(name)) removed = false
-			}
-			return removed
+			return this.#remove(names).reduce((all, removed) => removed && all, true)
 		}
 		const tool = this.#tools.get(names)
 		if (tool === undefined) return false
@@ -121,6 +117,10 @@ export class ToolManager implements ToolManagerInterface {
 		this.clear()
 		this.#emitter.destroy()
 		this.#tools.clear()
+	}
+
+	*#remove(names: readonly string[]): Generator<boolean> {
+		for (const name of names) yield this.remove(name)
 	}
 
 	async #run(call: ToolCall, context: ToolContext): Promise<ToolResult> {

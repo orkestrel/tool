@@ -65,13 +65,15 @@ export class Tool implements ToolInterface {
 		const fault = faults[0]
 		if (fault !== undefined) {
 			const path = isString(fault.path) ? fault.path : fault.path.join('.')
-			let message = `${path}: ${fault.reason}`
-			if ('expected' in fault) message += `; expected ${fault.expected}`
-			if ('received' in fault) message += `; received ${fault.received}`
-			if ('constraint' in fault) message += `; constraint ${fault.constraint}`
-			if ('limit' in fault && fault.limit !== undefined) message += `; limit ${fault.limit}`
-			if ('variants' in fault) message += `; variants ${fault.variants}`
-			if ('matched' in fault) message += `; matched ${fault.matched}`
+			const message = [
+				`${path}: ${fault.reason}`,
+				...('expected' in fault ? [`expected ${fault.expected}`] : []),
+				...('received' in fault ? [`received ${fault.received}`] : []),
+				...('constraint' in fault ? [`constraint ${fault.constraint}`] : []),
+				...('limit' in fault && fault.limit !== undefined ? [`limit ${fault.limit}`] : []),
+				...('variants' in fault ? [`variants ${fault.variants}`] : []),
+				...('matched' in fault ? [`matched ${fault.matched}`] : []),
+			].join('; ')
 			throw new ToolError('ARGUMENTS', message, { faults })
 		}
 		if (this.#contract !== undefined) {

@@ -11,6 +11,10 @@ import {
 } from '@orkestrel/test'
 import { createToolCall } from '../../../setup.js'
 
+function refuseConversion(): never {
+	throw new Error('blocked string conversion')
+}
+
 describe('ToolManager registry', () => {
 	it('starts empty', () => {
 		const manager = new ToolManager()
@@ -755,9 +759,7 @@ describe('ToolManager execution', () => {
 
 	it('uses a fixed fallback when a thrown object cannot be stringified', async () => {
 		const reason = {
-			toString: () => {
-				throw new Error('blocked string conversion')
-			},
+			toString: refuseConversion,
 		}
 		const manager = new ToolManager()
 		manager.add(
@@ -1045,9 +1047,7 @@ describe('ToolManager batch execution', () => {
 
 	it('fully resolves a success beside a hostile throw', async () => {
 		const reason = {
-			toString: () => {
-				throw new Error('blocked string conversion')
-			},
+			toString: refuseConversion,
 		}
 		const manager = new ToolManager()
 		manager.add([

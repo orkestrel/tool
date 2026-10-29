@@ -131,6 +131,9 @@ exception. See [`## Methods`](#methods) for its public call surface.
 
 ### `ToolError`
 
+The guard recognizes self-branded errors across package copies and subclasses,
+validates the declared code and optional fault report, and refuses transparent proxies.
+
 The error class from [`errors.ts`](../src/core/errors.ts) extends `Error`. Its constructor takes
 `code`, `message`, and optional `context`. Direct tool execution throws an `ARGUMENTS` error with
 the full fault report in `context.faults`; the manager contains it as a message. Use `isToolError`
