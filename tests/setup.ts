@@ -1,5 +1,10 @@
 import type { ToolCall } from '@src/core'
 
+/** Refuses a string conversion with the fixture's expected error. */
+export function refuseConversion(): never {
+	throw new Error('blocked string conversion')
+}
+
 // The fleet-wide helpers live in `@orkestrel/test`. What remains here is what is specific to this
 // package: the tool call fixture.
 

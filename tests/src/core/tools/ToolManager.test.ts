@@ -9,11 +9,7 @@ import {
 	waitForAbort,
 	waitForDelay,
 } from '@orkestrel/test'
-import { createToolCall } from '../../../setup.js'
-
-function refuseConversion(): never {
-	throw new Error('blocked string conversion')
-}
+import { createToolCall, refuseConversion } from '../../../setup.js'
 
 describe('ToolManager registry', () => {
 	it('starts empty', () => {
