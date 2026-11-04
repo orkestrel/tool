@@ -1,3 +1,4 @@
+import type { ContractInterface } from '@orkestrel/contract'
 import type { ToolCall } from '@src/core'
 import { objectShape } from '@orkestrel/contract'
 
@@ -36,6 +37,30 @@ export function createUnreadableSchema(): Readonly<Record<string, unknown>> {
 		enumerable: true,
 		get: refuseConversion,
 	})
+}
+
+/**
+ * Wraps a real contract so each `explain` call is recorded, leaving every answer to the contract.
+ *
+ * @param contract - The contract that answers
+ * @param record - Called once per `explain`
+ * @returns A contract that behaves the same and reports its `explain` calls
+ */
+export function createExplainRecorder(
+	contract: ContractInterface<unknown>,
+	record: () => void,
+): ContractInterface<unknown> {
+	return {
+		schema: contract.schema,
+		is: contract.is,
+		parse: contract.parse,
+		audit: contract.audit,
+		generate: contract.generate,
+		explain: (value) => {
+			record()
+			return contract.explain(value)
+		},
+	}
 }
 
 /**

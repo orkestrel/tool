@@ -20,6 +20,7 @@ import {
 	extractForms,
 	extractPath,
 	extractSchema,
+	parametersToSchema,
 	readCall,
 	renderList,
 	renderPath,
@@ -34,6 +35,7 @@ import {
 	PET_PARAMETERS,
 	SCHEMA_DEFAULT_CALLS,
 	SCHEMA_VALID_CALLS,
+	createExplainRecorder,
 	refuseConversion,
 } from '../../setup.js'
 
@@ -209,6 +211,24 @@ describe('scanFaults', () => {
 		])
 	})
 
+	it('runs explain only where parse returns nothing', () => {
+		const real = createContract(objectShape({ limit: numberShape() }))
+		const explained = createRecorder<[]>()
+		const counted = createExplainRecorder(real, explained.handler)
+
+		expect(scanFaults(counted, { limit: 3 })).toEqual([])
+		expect(scanFaults(counted, { limit: '3' })).toEqual([])
+		expect(scanFaults(counted, { limit: '3', extra: 1 })).toEqual([
+			{ reason: 'extra', path: ['extra'] },
+		])
+		expect(explained.count).toBe(0)
+
+		expect(scanFaults(counted, { limit: 'many' })).toEqual([
+			{ reason: 'type', path: ['limit'], expected: 'number', received: '"many"' },
+		])
+		expect(explained.count).toBe(1)
+	})
+
 	it('returns nothing on the guard alone only where both reports are empty', () => {
 		const rows = [...SCHEMA_VALID_CALLS, ...SCHEMA_DEFAULT_CALLS].map(
 			([title, parameters, args]) => {
@@ -259,6 +279,32 @@ describe('scanFaults', () => {
 		)
 
 		expect(scanFaults(closed, value).length).toBeLessThanOrEqual(FAULT_LIMIT)
+	})
+})
+
+describe('parametersToSchema', () => {
+	it('reads a root with properties and no type as an object, leaving the record alone', () => {
+		const parameters = { properties: { a: { type: 'string' } }, required: ['a'] }
+
+		expect(parametersToSchema(parameters)).toEqual({
+			type: 'object',
+			properties: { a: { type: 'string' } },
+			required: ['a'],
+		})
+		expect(parameters).not.toHaveProperty('type')
+	})
+
+	it('returns every other record as it is', () => {
+		const rows: ReadonlyArray<Readonly<Record<string, unknown>>> = [
+			{},
+			{ type: 'object' },
+			{ type: 'object', properties: {} },
+			{ type: 'array', properties: {} },
+			{ anyOf: [{ type: 'string' }] },
+			{ $ref: '#/$defs/a' },
+		]
+
+		expect(rows.filter((row) => parametersToSchema(row) !== row)).toEqual([])
 	})
 })
 

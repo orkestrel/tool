@@ -11,7 +11,7 @@ import {
 } from '@orkestrel/contract'
 import { CLOSED_PARAMETERS, OPEN_PARAMETERS } from '../constants.js'
 import { ToolError } from '../errors.js'
-import { describeFaults, scanFaults } from '../helpers.js'
+import { describeFaults, parametersToSchema, scanFaults } from '../helpers.js'
 
 /**
  * Binds an executable tool definition to a handler.
@@ -26,7 +26,8 @@ import { describeFaults, scanFaults } from '../helpers.js'
  * hands over a plain top-level copy. A contract compiles at construction and derives the advertised
  * parameters. A `parameters` record is advertised verbatim and read once, by the lenient
  * `schemaToShape` on the first `execute`, where a conversion failure throws code `SCHEMA`; mutating
- * it later leaves the door behind what the tool advertises. With neither, the tool advertises and
+ * it later leaves the door behind what the tool advertises. A root with `properties` and no `type`
+ * compiles as an object, because arguments are always a record. With neither, the tool advertises and
  * enforces {@link CLOSED_PARAMETERS}. `strict: false` skips the door and forwards the arguments'
  * identity. Supplying a contract and parameters, `parameters` that is not a plain record, or a
  * `name` that is not a non-empty trimmed string throws code `SCHEMA`. Caller context is
@@ -128,7 +129,7 @@ export class Tool implements ToolInterface {
 	#compile(): ContractInterface<unknown> {
 		if (this.#contract !== undefined) return this.#contract
 		const compiled = attempt(() =>
-			createContract(schemaToShape(this.parameters ?? CLOSED_PARAMETERS)),
+			createContract(schemaToShape(parametersToSchema(this.parameters ?? CLOSED_PARAMETERS))),
 		)
 		if (!compiled.success) {
 			throw new ToolError(

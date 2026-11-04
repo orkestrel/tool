@@ -1,4 +1,5 @@
-import { createContract } from '@orkestrel/contract'
+import { createContract, numberShape, objectShape } from '@orkestrel/contract'
+import { createRecorder } from '@orkestrel/test'
 import { describe, expect, it } from 'vitest'
 import {
 	MALFORMED_CALLS,
@@ -9,6 +10,7 @@ import {
 	SCHEMA_VALID_CALLS,
 	createChainArguments,
 	createChainSchema,
+	createExplainRecorder,
 	createToolCall,
 	createUnreadableSchema,
 } from './setup.js'
@@ -35,6 +37,22 @@ describe('createUnreadableSchema', () => {
 
 		expect(() => schema.properties).toThrow('blocked string conversion')
 		expect(Object.keys(schema)).toEqual(['type', 'properties'])
+	})
+})
+
+describe('createExplainRecorder', () => {
+	it('records each explain and answers as the contract does', () => {
+		const contract = createContract(objectShape({ a: numberShape() }))
+		const calls = createRecorder<[]>()
+		const recorded = createExplainRecorder(contract, calls.handler)
+
+		expect(recorded.explain({ a: 'many' })).toEqual(contract.explain({ a: 'many' }))
+		expect(calls.count).toBe(1)
+		expect(recorded.is({ a: 1 })).toBe(true)
+		expect(recorded.parse({ a: '1' })).toEqual({ a: 1 })
+		expect(recorded.audit({ a: 1, b: 2 })).toEqual(contract.audit({ a: 1, b: 2 }))
+		expect(recorded.schema).toBe(contract.schema)
+		expect(calls.count).toBe(1)
 	})
 })
 

@@ -93,19 +93,20 @@ The call-envelope guard, from [`validators.ts`](../src/core/validators.ts).
 The advertised-definition projection, the door's report and its text, and the read of a call, from
 [`helpers.ts`](../src/core/helpers.ts).
 
-| Name                | Kind     | Signature                                                                         | Summary                                                                                                                                                                                        |
-| ------------------- | -------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `toolToDefinition`  | function | `(tool: ToolInterface) => ToolDefinition`                                         | Projects a tool onto the plain definition advertised to a caller, advertising an authored `summary` in place of the full description and carrying `parameters` and `annotations` by reference. |
-| `scanFaults`        | function | `(contract: ContractInterface<unknown>, value: unknown) => readonly AuditFault[]` | Walks an argument record through a contract's reports and returns the faults the Tool door refuses, empty when the record may proceed to `parse`.                                              |
-| `extractPath`       | function | `(fault: AuditFault) => readonly string[]`                                        | Extracts a fault's path as its segments, reading a string path as one segment.                                                                                                                 |
-| `extractForms`      | function | `(schema: JSONSchema \| undefined) => readonly JSONSchema[]`                      | Extracts a schema's forms: the schema itself, then the arms of its `anyOf`, so a read looks through a nullable the same way everywhere.                                                        |
-| `extractSchema`     | function | `(schema: JSONSchema, path: readonly string[]) => JSONSchema \| undefined`        | Extracts the part of a schema a path reaches, through properties, array items, record values, and the arms of a union.                                                                         |
-| `renderPath`        | function | `(path: readonly string[]) => string`                                             | Renders a path as text, encoding what a caller could have sent and eliding the middle of a long one.                                                                                           |
-| `renderList`        | function | `(entries: readonly string[]) => string`                                          | Renders a list as text, naming at most `REFUSAL_LIST_LIMIT` of its entries and counting the rest.                                                                                              |
-| `describeFaultLine` | function | `(fault: AuditFault, schema: JSONSchema) => string`                               | Describes one fault as the line a caller corrects from, naming what to send where the schema says.                                                                                             |
-| `readCall`          | function | `(call: unknown) => Readonly<Record<string, unknown>>`                            | Reads a call's `id`, `name`, and `arguments` once into a plain record, so a guard and every later step see the same values.                                                                    |
-| `describeFaults`    | function | `(faults: readonly AuditFault[], schema: JSONSchema) => string`                   | Describes a fault report as text a caller corrects from, one fault per line, at most `REFUSAL_TEXT_LIMIT` characters in all.                                                                   |
-| `buildCallRefusal`  | function | `(call: unknown) => ToolFailure`                                                  | Builds the failure a registry answers with for a value that is not a `ToolCall`, carrying each of its `id` and `name` that is a string and leaving the other empty.                            |
+| Name                 | Kind     | Signature                                                                              | Summary                                                                                                                                                                                        |
+| -------------------- | -------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `toolToDefinition`   | function | `(tool: ToolInterface) => ToolDefinition`                                              | Projects a tool onto the plain definition advertised to a caller, advertising an authored `summary` in place of the full description and carrying `parameters` and `annotations` by reference. |
+| `scanFaults`         | function | `(contract: ContractInterface<unknown>, value: unknown) => readonly AuditFault[]`      | Walks an argument record through a contract's reports and returns the faults the Tool door refuses, empty when the record may proceed to `parse`.                                              |
+| `parametersToSchema` | function | `(parameters: Readonly<Record<string, unknown>>) => Readonly<Record<string, unknown>>` | Projects a `parameters` record onto the schema its door compiles, reading a root with `properties` and no `type` as an object, because a tool's arguments are always a record.                 |
+| `extractPath`        | function | `(fault: AuditFault) => readonly string[]`                                             | Extracts a fault's path as its segments, reading a string path as one segment.                                                                                                                 |
+| `extractForms`       | function | `(schema: JSONSchema \| undefined) => readonly JSONSchema[]`                           | Extracts a schema's forms: the schema itself, then the arms of its `anyOf`, so a read looks through a nullable the same way everywhere.                                                        |
+| `extractSchema`      | function | `(schema: JSONSchema, path: readonly string[]) => JSONSchema \| undefined`             | Extracts the part of a schema a path reaches, through properties, array items, record values, and the arms of a union.                                                                         |
+| `renderPath`         | function | `(path: readonly string[]) => string`                                                  | Renders a path as text, encoding what a caller could have sent and eliding the middle of a long one.                                                                                           |
+| `renderList`         | function | `(entries: readonly string[]) => string`                                               | Renders a list as text, naming at most `REFUSAL_LIST_LIMIT` of its entries and counting the rest.                                                                                              |
+| `describeFaultLine`  | function | `(fault: AuditFault, schema: JSONSchema) => string`                                    | Describes one fault as the line a caller corrects from, naming what to send where the schema says.                                                                                             |
+| `readCall`           | function | `(call: unknown) => Readonly<Record<string, unknown>>`                                 | Reads a call's `id`, `name`, and `arguments` once into a plain record, so a guard and every later step see the same values.                                                                    |
+| `describeFaults`     | function | `(faults: readonly AuditFault[], schema: JSONSchema) => string`                        | Describes a fault report as text a caller corrects from, one fault per line, at most `REFUSAL_TEXT_LIMIT` characters in all.                                                                   |
+| `buildCallRefusal`   | function | `(call: unknown) => ToolFailure`                                                       | Builds the failure a registry answers with for a value that is not a `ToolCall`, carrying each of its `id` and `name` that is a string and leaving the other empty.                            |
 
 ### Factories
 
@@ -399,7 +400,8 @@ Every call passes the door before the handler, in this order:
 1. Each top-level argument is read once into a copy, and a read that throws refuses. Every later step
    reads that copy.
 2. A value `is` accepts goes straight to `parse`, because `audit` is empty if and only if `is` holds.
-3. A fault from `explain` refuses.
+3. A fault from `explain` refuses. `explain` runs only where `parse` returns nothing, because it is
+   empty exactly when `parse` is defined.
 4. An `extra` fault from `audit` refuses. A shape declared open with
    `objectShape(properties, { additionalProperties: true })`, or a schema whose `additionalProperties`
    is absent or `true`, is the one way to admit an undeclared key.
@@ -408,9 +410,9 @@ Every call passes the door before the handler, in this order:
    a coercion through one is not a repair.
 7. `contract.parse` gives the handler its arguments.
 
-A nested accessor is still read by both `is` and `parse`. A value that changes between them cannot
-reach the handler invalid, because every defined `parse` result satisfies `is`, and one that stops
-parsing refuses.
+A nested accessor is read by each step that runs, which on a valid record is `is` and `parse`. A value
+that changes between them cannot reach the handler invalid, because every defined `parse` result
+satisfies `is`, and one that stops parsing refuses.
 
 The handler receives what `parse` returns. That is a fresh null-prototype record at each declared
 object, so read its keys directly, with `Object.keys`, or with `in`: `String(args)` and
@@ -422,9 +424,12 @@ values by reference.
 The leaf coercions `parse` publishes stay accepted: `'30.0'` reaches the handler as `30`, `'true'`
 as `true`, and a finite number as its string, because a model's argument text is what a tool receives.
 `anyOf: [T, { type: 'null' }]` converts to a nullable rather than a union, so `'5'` reaches the handler
-of an `Optional[int]` as `5`, and a refusal there names the inner fault. A schema with `properties` and
-no `type` converts to a union, because it also admits a non-object, so a coercion through it refuses as
-`variant` at the root and the faults under that root are left out.
+of an `Optional[int]` as `5`, and a refusal there names the inner fault. A `parameters` root with
+`properties` and no `type` compiles as `{ type: 'object', ...parameters }` and stays advertised verbatim,
+because a tool's arguments are always a record. A nested node with `properties` and no `type` keeps its
+conversion to a union, because a nested value can hold a non-object, so a coercion through it refuses
+as `variant` at that path and the faults under that path are left out. Declare `type: 'object'` on a
+nested node to get the repair and the inner fault.
 
 A schema `default` never refuses a call, and `parse` fills it only where the lenient conversion carries
 it: a primitive or literal default on an optional key of a closed object with no union ancestor. See

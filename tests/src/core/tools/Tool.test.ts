@@ -517,7 +517,48 @@ describe('Tool', () => {
 		)
 	})
 
-	it('refuses a non-record even where a typeless schema admits one', () => {
+	it('compiles a root with properties and no type as an object, and advertises it verbatim', () => {
+		const parameters = {
+			properties: { count: { type: 'number' } },
+			required: ['count'],
+		}
+		const tool = new Tool({ name: 'typeless', parameters, execute: (args) => args })
+
+		expect(tool.execute({ count: '5' }, context)).toEqual({ count: 5 })
+		expect(tool.execute({ count: 5, other: 1 }, context)).toEqual({ count: 5, other: 1 })
+		expect(tool.parameters).toBe(parameters)
+		expect(parameters).not.toHaveProperty('type')
+
+		const wrong = attempt(() => tool.execute({ count: 'many' }, context))
+		expect(wrong.success).toBe(false)
+		if (wrong.success || !isToolError(wrong.error)) throw new Error('Expected an argument error')
+		expect(wrong.error.message).toBe('count: type; expected number; received "many"')
+
+		const missing = attempt(() => tool.execute({}, context))
+		expect(missing.success).toBe(false)
+		if (missing.success || !isToolError(missing.error))
+			throw new Error('Expected an argument error')
+		expect(missing.error.message).toBe('count: missing; expected number')
+	})
+
+	it('closes a typeless root that says so, and lists its keys', () => {
+		const tool = new Tool({
+			name: 'typeless',
+			parameters: { properties: { count: { type: 'number' } }, additionalProperties: false },
+			execute: (args) => args,
+		})
+
+		const refused = attempt(() => tool.execute({ count: 5, cuont: 5 }, context))
+
+		expect(refused.success).toBe(false)
+		if (refused.success || !isToolError(refused.error))
+			throw new Error('Expected an argument error')
+		expect(refused.error.message).toBe(
+			'cuont: extra; this key is not declared, remove it or use a declared key: count',
+		)
+	})
+
+	it('refuses a non-record at a typeless root', () => {
 		const tool = new Tool({
 			name: 'typeless',
 			parameters: { properties: { a: { type: 'string' } } },
@@ -529,24 +570,28 @@ describe('Tool', () => {
 		expect(refused.success).toBe(false)
 		if (refused.success || !isToolError(refused.error))
 			throw new Error('Expected an argument error')
-		expect(refused.error.code).toBe('ARGUMENTS')
+		expect(refused.error.message).toBe(': type; expected object; received "text"')
 		expect(tool.execute({ a: 'x' }, context)).toBe('ran')
 	})
 
-	it('refuses a coercion through a typeless schema, which converts to a union', () => {
+	it('keeps a nested node with properties and no type a union, which can hold a non-object', () => {
 		const tool = new Tool({
-			name: 'typeless',
-			parameters: { properties: { count: { type: 'number' } } },
+			name: 'nested',
+			parameters: {
+				type: 'object',
+				properties: { page: { properties: { count: { type: 'number' } } } },
+			},
 			execute: (args) => args,
 		})
 
-		const refused = attempt(() => tool.execute({ count: '5' }, context))
+		const refused = attempt(() => tool.execute({ page: { count: '5' } }, context))
 
 		expect(refused.success).toBe(false)
 		if (refused.success || !isToolError(refused.error))
 			throw new Error('Expected an argument error')
-		expect(refused.error.message.startsWith(': variant; ')).toBe(true)
-		expect(tool.execute({ count: 5 }, context)).toEqual({ count: 5 })
+		expect(refused.error.message.startsWith('page: variant; ')).toBe(true)
+		expect(tool.execute({ page: { count: 5 } }, context)).toEqual({ page: { count: 5 } })
+		expect(tool.execute({ page: 'text' }, context)).toEqual({ page: 'text' })
 	})
 
 	it('validates with explain and forwards parsed arguments with coercion', () => {
@@ -642,6 +687,24 @@ describe('Tool', () => {
 
 		expect(tool.execute({ page }, context)).toBe('ran')
 		expect(reads.count).toBe(2)
+	})
+
+	it('reports parse faults where parse does not hold', () => {
+		const tool = new Tool({
+			name: 'slow',
+			contract: objectShape({ limit: numberShape() }),
+			execute: () => 'ran',
+		})
+
+		const refused = attempt(() => tool.execute({ limit: 'many', extra: 1 }, context))
+
+		expect(refused.success).toBe(false)
+		if (refused.success || !isToolError(refused.error))
+			throw new Error('Expected an argument error')
+		expect(refused.error.context?.faults).toEqual([
+			{ reason: 'type', path: ['limit'], expected: 'number', received: '"many"' },
+			{ reason: 'extra', path: ['extra'] },
+		])
 	})
 
 	it('refuses a nested value that stops parsing after the guard passed', () => {

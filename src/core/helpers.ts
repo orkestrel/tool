@@ -44,6 +44,34 @@ export function toolToDefinition(tool: ToolInterface): ToolDefinition {
 }
 
 /**
+ * Projects a `parameters` record onto the schema its door compiles, reading a root with
+ * `properties` and no `type` as an object, because a tool's arguments are always a record.
+ *
+ * @remarks
+ * Without this the lenient conversion reads such a root as a union that also admits non-objects,
+ * so a coercion through it refuses and its inner faults are left out. The record itself stays as
+ * it was given, and it is what the tool advertises. A nested node keeps its conversion, because a
+ * nested value can hold a non-object.
+ *
+ * @param parameters - The record the tool advertises
+ * @returns The schema to compile: a fresh object for a typeless root, otherwise the record itself
+ *
+ * @example
+ * ```ts
+ * import { parametersToSchema } from '@orkestrel/tool'
+ *
+ * parametersToSchema({ properties: {} }) // { type: 'object', properties: {} }
+ * ```
+ */
+export function parametersToSchema(
+	parameters: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	return Object.hasOwn(parameters, 'properties') && !Object.hasOwn(parameters, 'type')
+		? { type: 'object', ...parameters }
+		: parameters
+}
+
+/**
  * Extracts a fault's path as its segments, reading a string path as one segment.
  *
  * @param fault - The fault to read
@@ -121,10 +149,11 @@ export function extractSchema(schema: JSONSchema, path: readonly string[]): JSON
  *
  * @remarks
  * A value `is` accepts returns empty without either report, because `audit` is empty if and only
- * if `is` holds and a guard-valid value always parses. Otherwise every parse fault refuses, and an
- * undeclared key, a `variant` fault, and a `oneOf` fault found by `audit` are reported beside them,
- * so one refusal names them all: a union repairs by declaration order, so a coercion through one is
- * not a repair. Where a union fault covers a path, every fault under that path is left out, because
+ * if `is` holds and a guard-valid value always parses. Otherwise `explain` runs only where `parse`
+ * returns nothing, because it is empty exactly when `parse` is defined. Every parse fault refuses,
+ * and an undeclared key, a `variant` fault, and a `oneOf` fault found by `audit` are reported beside
+ * them, so one refusal names them all: a union repairs by declaration order, so a coercion through
+ * one is not a repair. Where a union fault covers a path, every fault under that path is left out, because
  * those come from the walk of one arm and can call a key undeclared that another arm declares. A
  * coercible leaf alone does not refuse, unless the audit reached `FAULT_LIMIT`, where its cap can
  * hide an undeclared key. The report holds at most `FAULT_LIMIT` entries.
@@ -150,7 +179,7 @@ export function scanFaults(
 	if (contract.is(value)) return []
 	const audited = contract.audit(value)
 	const merged = [
-		...contract.explain(value),
+		...(contract.parse(value) === undefined ? contract.explain(value) : []),
 		...audited.filter(
 			(fault) => fault.reason === 'extra' || fault.reason === 'variant' || fault.reason === 'oneOf',
 		),

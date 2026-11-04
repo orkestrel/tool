@@ -153,7 +153,8 @@ export interface ToolInterface extends ToolDefinition {
  * handles the caller-supplied arguments record and execution context. `contract` compiles
  * at construction and derives the advertised parameters; `parameters` is advertised
  * verbatim and read once, by the lenient `schemaToShape` on the first `execute`, so mutating
- * the record after that call leaves the door behind what the tool advertises. With neither,
+ * the record after that call leaves the door behind what the tool advertises. A root with
+ * `properties` and no `type` compiles as an object, because arguments are always a record. With neither,
  * the tool advertises and enforces `CLOSED_PARAMETERS`. Supplying `parameters` alongside
  * `contract` throws a `ToolError` with code `SCHEMA`, as do `parameters` that is not a plain
  * record and a `name` that is not a non-empty trimmed string.
