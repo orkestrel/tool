@@ -33,5 +33,5 @@ export const REFUSAL_TEXT_LIMIT = 2048
 /** Caps at `12` the declared keys or literal candidates one refusal line names. */
 export const REFUSAL_LIST_LIMIT = 12
 
-/** Caps at `160` the characters of the sub-schema a union refusal line quotes. */
+/** Caps at `160` the characters a union refusal line spends summarizing one declared form. */
 export const REFUSAL_SCHEMA_LIMIT = 160

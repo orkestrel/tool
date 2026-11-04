@@ -658,7 +658,8 @@ describe('ToolManager execution', () => {
 			id: 'call',
 			name: 'bare',
 			success: false,
-			error: 'x: extra; this key is not declared, remove it',
+			error:
+				"x: extra; this tool declares no arguments, so remove this key; to accept it, the tool's author must supply contract or parameters, or strict: false",
 		})
 		expect(entered.count).toBe(0)
 	})

@@ -78,7 +78,7 @@ The schemas a tool advertises when it declares none, and the bounds of a refusal
 | `OPEN_PARAMETERS`      | const | `Readonly<Record<string, unknown>>` | Holds the schema a raw tool that declares nothing advertises: an open object.                 |
 | `REFUSAL_TEXT_LIMIT`   | const | `2048`                              | Caps at `2048` the characters of a refusal message, about 2 KB.                               |
 | `REFUSAL_LIST_LIMIT`   | const | `12`                                | Caps at `12` the declared keys or literal candidates one refusal line names.                  |
-| `REFUSAL_SCHEMA_LIMIT` | const | `160`                               | Caps at `160` the characters of the sub-schema a union refusal line quotes.                   |
+| `REFUSAL_SCHEMA_LIMIT` | const | `160`                               | Caps at `160` the characters a union refusal line spends summarizing one declared form.       |
 
 ### Validators
 
@@ -103,6 +103,7 @@ The advertised-definition projection, the door's report and its text, and the re
 | `extractSchema`      | function | `(schema: JSONSchema, path: readonly string[]) => JSONSchema \| undefined`             | Extracts the part of a schema a path reaches, through properties, array items, record values, and the arms of a union.                                                                         |
 | `renderPath`         | function | `(path: readonly string[]) => string`                                                  | Renders a path as text, encoding what a caller could have sent and eliding the middle of a long one.                                                                                           |
 | `renderList`         | function | `(entries: readonly string[]) => string`                                               | Renders a list as text, naming at most `REFUSAL_LIST_LIMIT` of its entries and counting the rest.                                                                                              |
+| `renderForm`         | function | `(schema: JSONSchema, room?: number) => string`                                        | Renders a schema as a short summary of what to send, such as `{"city": string, "note"?: string}`.                                                                                              |
 | `describeFaultLine`  | function | `(fault: AuditFault, schema: JSONSchema) => string`                                    | Describes one fault as the line a caller corrects from, naming what to send where the schema says.                                                                                             |
 | `readCall`           | function | `(call: unknown) => Readonly<Record<string, unknown>>`                                 | Reads a call's `id`, `name`, and `arguments` once into a plain record, so a guard and every later step see the same values.                                                                    |
 | `describeFaults`     | function | `(faults: readonly AuditFault[], schema: JSONSchema) => string`                        | Describes a fault report as text a caller corrects from, one fault per line, at most `REFUSAL_TEXT_LIMIT` characters in all.                                                                   |
@@ -228,7 +229,8 @@ An explicit `parameters` schema is advertised by reference, and the same schema 
 declaring `required` tells the caller what to send, and the door refuses a call that omits it. See
 [Contract validation and errors](#contract-validation-and-errors) for what the door does and for the
 `strict: false` opt-out. A tool that declares neither `contract` nor `parameters` takes no
-arguments: it advertises and enforces `CLOSED_PARAMETERS`.
+arguments: it advertises and enforces `CLOSED_PARAMETERS`, and a call that sends a key is told what the
+tool's author must supply.
 
 A handler receives a `Readonly<Record<string, unknown>>` and a required `ToolContext`.
 The record is what `parse` returns, or the original input under `strict: false`; see
@@ -445,11 +447,16 @@ says what to send where the schema says so:
 - An `extra` line lists the keys declared at that path, at most `REFUSAL_LIST_LIMIT` of them.
 - A line on a literal names its candidates, at most `REFUSAL_LIST_LIMIT` of them.
 - A `variant` or `oneOf` line says that the value matches none of the declared forms, or several where
-  exactly one must match, and that it must be sent exactly as the schema declares. It quotes the schema
-  at that path when that fits in `REFUSAL_SCHEMA_LIMIT` characters.
+  exactly one must match, and that it must be sent exactly as the schema declares. It summarizes each
+  form, such as `{"city": string} or {"zip": number}`, with required keys first and optional keys marked
+  `?`. It names at most `REFUSAL_LIST_LIMIT` forms, each in at most `REFUSAL_SCHEMA_LIMIT` characters.
+- An `extra` line at the root of a tool that declares no arguments tells the author to supply `contract`
+  or `parameters`, or `strict: false`, because writing a handler before its schema is the ordinary first
+  use.
 
 Where a `variant` or `oneOf` fault covers a path, every fault under that path is left out, because
-those come from the walk of one arm and can call a key undeclared that another arm declares.
+those come from the walk of one arm and can call a key undeclared that another arm declares. The
+summary of each form takes their place, so no one form's faults read as if they held for all of them.
 
 Array paths join with `.`. A segment that is not a plain identifier is JSON-encoded and length-capped,
 because a key the caller sent is untrusted text. A path of more than four segments past 120 characters
@@ -603,7 +610,7 @@ registers here unchanged.
 - [`Tool.test.ts`](../tests/src/core/tools/Tool.test.ts) — definition binding, optional-field omission, name and `parameters` refusal, context identity, the door over contracts, schemas, and undeclared tools, schema value and default-placement tables the door must never refuse, first-call compilation and the one read of a schema, the one read of each top-level argument, what a handler receives at each kind of node, the refusal text and its bound, the `strict: false` passthrough, error diagnostics, return values, and direct error propagation.
 - [`ToolManager.test.ts`](../tests/src/core/tools/ToolManager.test.ts) — insertion order, overwrite and removal lifecycle, definition projection, malformed calls, cancellation, context sharing, and isolated single and batch execution. Event proofs cover registration before `add`, ordered batch additions, the installed replacement during `remove`, `remove` before replacement `add`, synchronous replacement re-entry, a third instance a removal listener installs during a replacement, deletion before `remove`, silent missing names, ordered batch removals, populated and empty `clear` snapshots by identity, emitter destruction after clearing, an empty registry after teardown listeners re-add a tool, sibling delivery during mid-emission destruction, silent additions after destruction, and execution without registry events.
 - [`factories.test.ts`](../tests/src/core/factories.test.ts) — factory construction, working instances, initial registry hooks in publication order, sibling listener isolation, and listener-error forwarding.
-- [`helpers.test.ts`](../tests/src/core/helpers.test.ts) — definition projection: summary preference, omitted optional keys, projected key order, schema identity, title and annotations forwarding, and a fresh object per call; the door's report over parse faults, undeclared keys, unions, faults a union covers, the guard's fast path, and the fault limit; the walk of a path through a schema; the rendered path and list; each refusal line and the bound on the whole text; the read of a call; and the malformed-call failure.
+- [`helpers.test.ts`](../tests/src/core/helpers.test.ts) — definition projection: summary preference, omitted optional keys, projected key order, schema identity, title and annotations forwarding, and a fresh object per call; the door's report over parse faults, undeclared keys, unions, faults a union covers, the guard's fast path, and the fault limit; the walk of a path through a schema; the rendered path, list, and form; each refusal line and the bound on the whole text; the read of a call; and the malformed-call failure.
 - [`validators.test.ts`](../tests/src/core/validators.test.ts) — tool-call envelope boundaries: incomplete calls, wrong field types, and non-record arguments.
 - [`errors.test.ts`](../tests/src/core/errors.test.ts) — `isToolError` recognition, an `extra` fault in a report, the `cause` option, unrelated-value rejection, and hostile prototype containment.
 

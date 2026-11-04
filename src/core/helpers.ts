@@ -255,14 +255,84 @@ export function renderList(entries: readonly string[]): string {
 }
 
 /**
+ * Renders a schema as a short summary of what to send, such as `{"city": string, "note"?: string}`.
+ *
+ * @remarks
+ * An object lists its required keys first and marks the rest with `?`, at most `REFUSAL_LIST_LIMIT`
+ * of them. A leaf or array keeps its numeric bounds and pattern, a union joins its forms with ` | `,
+ * and a schema that says nothing reads `any`. Each nested form takes half the room of its parent, and
+ * below 16 characters a form stops at its type, so a schema that holds itself still ends. Text past
+ * `room` is cut and closes with `…`.
+ *
+ * @param schema - The schema to summarize
+ * @param room - The characters the summary can take. Default: `REFUSAL_SCHEMA_LIMIT`
+ * @returns The summary
+ *
+ * @example
+ * ```ts
+ * import { renderForm } from '@orkestrel/tool'
+ *
+ * renderForm({ type: 'object', properties: { zip: { type: 'number' } }, required: ['zip'] }) // '{"zip": number}'
+ * ```
+ */
+export function renderForm(schema: JSONSchema, room: number = REFUSAL_SCHEMA_LIMIT): string {
+	const deep = room >= 16
+	const inner = Math.floor(room / 2)
+	const forms = schema.anyOf ?? schema.oneOf
+	const required = schema.required ?? []
+	const entries = Object.entries(schema.properties ?? {})
+	const listed = (deep ? entries : [])
+		.toSorted(
+			([left], [right]) => Number(required.includes(right)) - Number(required.includes(left)),
+		)
+		.slice(0, REFUSAL_LIST_LIMIT)
+		.map(
+			([key, child]) =>
+				`${preview(key)}${required.includes(key) ? '' : '?'}: ${renderForm(child, inner)}`,
+		)
+	const left = entries.length - listed.length
+	const child =
+		schema.type === 'array'
+			? schema.items
+			: isRecord(schema.additionalProperties)
+				? schema.additionalProperties
+				: undefined
+	const bounds = Object.entries(schema)
+		.filter(([key]) =>
+			['minLength', 'maxLength', 'minimum', 'maximum', 'minItems', 'maxItems', 'pattern'].includes(
+				key,
+			),
+		)
+		.map(([key, value]) => `${key} ${preview(value)}`)
+	const text =
+		forms !== undefined
+			? deep
+				? forms.map((form) => renderForm(form, inner)).join(' | ')
+				: 'any'
+			: schema.enum !== undefined
+				? schema.enum.map((value) => preview(value)).join(' | ')
+				: listed.length > 0
+					? `{${[...listed, ...(left > 0 ? [`and ${String(left)} more`] : [])].join(', ')}}`
+					: [
+							schema.type ?? (entries.length > 0 ? 'object' : 'any'),
+							...(deep && child !== undefined ? [` of ${renderForm(child, inner)}`] : []),
+							...(bounds.length > 0 ? [` (${bounds.join(', ')})`] : []),
+						].join('')
+	const characters = Array.from(text)
+	return characters.length <= room ? text : `${characters.slice(0, room - 1).join('')}…`
+}
+
+/**
  * Describes one fault as the line a caller corrects from, naming what to send where the schema
  * says.
  *
  * @remarks
  * Each line opens with the fault's path and reason. An `extra` fault lists the keys declared at
- * its parent, a fault on a literal names its candidates, and each list is bounded. A `variant` or
+ * its parent, and at the root of a closed object that declares none it tells the tool's author what
+ * to supply. A fault on a literal names its candidates, and each list is bounded. A `variant` or
  * `oneOf` fault says that the value matches none of the declared forms, or several where one must
- * match, and quotes the schema at that path when it fits in `REFUSAL_SCHEMA_LIMIT`.
+ * match, and summarizes each form through `renderForm`. It names no fault of any one form, because
+ * none of them holds for the others. Those summaries share half of `REFUSAL_TEXT_LIMIT`.
  *
  * @param fault - The fault to describe
  * @param schema - The compiled schema the fault's path reads
@@ -282,6 +352,9 @@ export function describeFaultLine(fault: AuditFault, schema: JSONSchema): string
 		const keys = extractForms(extractSchema(schema, path.slice(0, -1))).flatMap((form) =>
 			Object.keys(form.properties ?? {}),
 		)
+		if (path.length === 1 && keys.length === 0 && schema.additionalProperties === false) {
+			return `${head}; this tool declares no arguments, so remove this key; to accept it, the tool's author must supply contract or parameters, or strict: false`
+		}
 		return keys.length === 0
 			? `${head}; this key is not declared, remove it`
 			: `${head}; this key is not declared, remove it or use a declared key: ${renderList(keys.map((key) => renderPath([key])))}`
@@ -294,12 +367,18 @@ export function describeFaultLine(fault: AuditFault, schema: JSONSchema): string
 			fault.reason === 'oneOf' && fault.matched > 0
 				? `the value matches ${String(fault.matched)} of ${forms} and must match exactly one`
 				: `the value matches none of ${forms}`
-		const quoted = attempt(() => JSON.stringify(node ?? {}))
-		const shown =
-			quoted.success && quoted.value.length > 2 && quoted.value.length <= REFUSAL_SCHEMA_LIMIT
-				? `: ${quoted.value}`
-				: ''
-		return `${head}; ${claim}; send it exactly as the schema declares${shown}`
+		const declared = node?.anyOf ?? node?.oneOf ?? []
+		const shown = declared.slice(0, REFUSAL_LIST_LIMIT)
+		const room = Math.min(
+			REFUSAL_SCHEMA_LIMIT,
+			Math.floor(REFUSAL_TEXT_LIMIT / 2 / Math.max(shown.length, 1)),
+		)
+		const more = declared.length - shown.length
+		const summary =
+			shown.length === 0
+				? ''
+				: `, one of: ${shown.map((form) => renderForm(form, room)).join(' or ')}${more > 0 ? ` and ${String(more)} more` : ''}`
+		return `${head}; ${claim}; send it exactly as the schema declares${summary}`
 	}
 	const candidates =
 		fault.expected === 'literal'

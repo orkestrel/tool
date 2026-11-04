@@ -254,7 +254,7 @@ describe('Tool', () => {
 		if (!isToolError(unmatched.error)) throw new Error('Expected a tool error')
 		expect(unmatched.error.code).toBe('ARGUMENTS')
 		expect(unmatched.error.message).toBe(
-			'amount: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares: {"anyOf":[{"type":"number"},{"type":"string","minLength":3}]}',
+			'amount: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares, one of: number or string (minLength 3)',
 		)
 		expect(unmatched.error.context?.faults).toEqual([
 			{ reason: 'variant', path: ['amount'], variants: 2 },
@@ -378,9 +378,62 @@ describe('Tool', () => {
 		expect(result.success).toBe(false)
 		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
 		expect(result.error.message).toBe(
-			'choice: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares',
+			'choice: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares, one of: {"amount": number} or {"name": string}',
 		)
 		expect(recorder.count).toBe(0)
+	})
+
+	it('names enough of a union that the refusal alone gives a correct second call', () => {
+		const tool = new Tool({
+			name: 'where',
+			contract: objectShape({
+				choice: unionShape(
+					objectShape({ city: stringShape() }),
+					objectShape({ zip: numberShape() }),
+				),
+			}),
+			execute: (args) => args,
+		})
+
+		const refused = attempt(() => tool.execute({ choice: { zip: '123' } }, context))
+
+		expect(refused.success).toBe(false)
+		if (refused.success || !isToolError(refused.error))
+			throw new Error('Expected an argument error')
+		expect(refused.error.message).toBe(
+			'choice: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares, one of: {"city": string} or {"zip": number}',
+		)
+		expect(refused.error.context?.faults).toEqual([
+			{ reason: 'variant', path: ['choice'], variants: 2 },
+		])
+		expect(tool.execute({ choice: { zip: 123 } }, context)).toEqual({ choice: { zip: 123 } })
+	})
+
+	it('tells the author of a tool that declares nothing what to supply', () => {
+		const tool = new Tool({ name: 'echo', execute: (args) => args.text })
+
+		const refused = attempt(() => tool.execute({ text: 'hello' }, context))
+
+		expect(refused.success).toBe(false)
+		if (refused.success || !isToolError(refused.error))
+			throw new Error('Expected an argument error')
+		expect(refused.error.message).toBe(
+			"text: extra; this tool declares no arguments, so remove this key; to accept it, the tool's author must supply contract or parameters, or strict: false",
+		)
+		expect(refused.error.context?.faults).toEqual([{ reason: 'extra', path: ['text'] }])
+		expect(
+			new Tool({ name: 'echo', strict: false, execute: (args) => args.text }).execute(
+				{ text: 'hello' },
+				context,
+			),
+		).toBe('hello')
+		expect(
+			new Tool({
+				name: 'echo',
+				contract: objectShape({ text: stringShape() }),
+				execute: (args) => args.text,
+			}).execute({ text: 'hello' }, context),
+		).toBe('hello')
 	})
 
 	it('never tells a caller to remove a key another arm declares', () => {

@@ -22,6 +22,7 @@ import {
 	extractSchema,
 	parametersToSchema,
 	readCall,
+	renderForm,
 	renderList,
 	renderPath,
 	scanFaults,
@@ -392,6 +393,105 @@ describe('renderList', () => {
 	})
 })
 
+describe('renderForm', () => {
+	it('names a leaf by its type, and a schema that says nothing as any', () => {
+		expect(renderForm({ type: 'string' })).toBe('string')
+		expect(renderForm({ type: 'integer' })).toBe('integer')
+		expect(renderForm({ type: 'null' })).toBe('null')
+		expect(renderForm({})).toBe('any')
+	})
+
+	it('keeps the bounds a caller must meet', () => {
+		expect(renderForm({ type: 'string', minLength: 3, maxLength: 9 })).toBe(
+			'string (minLength 3, maxLength 9)',
+		)
+		expect(renderForm({ type: 'number', minimum: 0, maximum: 1 })).toBe(
+			'number (minimum 0, maximum 1)',
+		)
+		expect(renderForm({ type: 'array', items: { type: 'string' }, minItems: 1 })).toBe(
+			'array of string (minItems 1)',
+		)
+		expect(renderForm({ type: 'string', pattern: '^a' })).toBe('string (pattern "^a")')
+	})
+
+	it('names literals, unions, and arrays', () => {
+		expect(renderForm({ enum: ['a', 'b'] })).toBe('"a" | "b"')
+		expect(renderForm({ anyOf: [{ type: 'integer' }, { type: 'null' }] })).toBe('integer | null')
+		expect(renderForm({ oneOf: [{ type: 'string' }, { type: 'number' }] })).toBe('string | number')
+		expect(renderForm({ type: 'array' })).toBe('array')
+		expect(renderForm({ type: 'array', items: { type: 'number' } })).toBe('array of number')
+	})
+
+	it('lists required keys first and marks the optional ones', () => {
+		expect(
+			renderForm({
+				type: 'object',
+				properties: { note: { type: 'string' }, city: { type: 'string' } },
+				required: ['city'],
+			}),
+		).toBe('{"city": string, "note"?: string}')
+	})
+
+	it('names an object with no keys, and one holding values of one form', () => {
+		expect(renderForm({ type: 'object' })).toBe('object')
+		expect(renderForm({ type: 'object', properties: {} })).toBe('object')
+		expect(renderForm({ type: 'object', additionalProperties: { type: 'number' } })).toBe(
+			'object of number',
+		)
+		expect(renderForm({ type: 'object', additionalProperties: true })).toBe('object')
+	})
+
+	it('nests until its room runs out', () => {
+		const inner = { type: 'object', properties: { deep: { type: 'string' } } } as const
+
+		expect(renderForm({ type: 'object', properties: { page: inner } })).toBe(
+			'{"page"?: {"deep"?: string}}',
+		)
+		expect(renderForm(inner, 8)).toBe('object')
+		expect(renderForm({ type: 'array', items: inner }, 8)).toBe('array')
+		expect(renderForm({ anyOf: [inner] }, 8)).toBe('any')
+	})
+
+	it('encodes a key and caps its length', () => {
+		expect(renderForm({ type: 'object', properties: { 'a b': {} } })).toBe('{"a b"?: any}')
+		expect(
+			renderForm({ type: 'object', properties: { ['k'.repeat(5000)]: {} } }).length,
+		).toBeLessThan(100)
+	})
+
+	it('bounds its text, and names how many keys it left out when they would fit', () => {
+		const properties = Object.fromEntries(
+			Array.from({ length: REFUSAL_LIST_LIMIT + 3 }, (_, index) => [
+				`key${String(index)}`,
+				{ type: 'string' as const },
+			]),
+		)
+
+		const cut = renderForm({ type: 'object', properties })
+		const whole = renderForm({ type: 'object', properties }, 4096)
+
+		expect(Array.from(cut).length).toBeLessThanOrEqual(REFUSAL_SCHEMA_LIMIT)
+		expect(cut.endsWith('…')).toBe(true)
+		expect(whole.endsWith(', and 3 more}')).toBe(true)
+	})
+
+	it('stops on a schema that holds itself', () => {
+		const array: { type: string; items?: unknown } = { type: 'array' }
+		array.items = array
+		const union: { anyOf: unknown[] } = { anyOf: [] }
+		union.anyOf.push(union)
+		const object: { type: string; properties: Record<string, unknown> } = {
+			type: 'object',
+			properties: {},
+		}
+		object.properties.self = object
+
+		expect(Reflect.apply(renderForm, undefined, [array])).toContain('array')
+		expect(Reflect.apply(renderForm, undefined, [union])).toBe('any')
+		expect(Reflect.apply(renderForm, undefined, [object])).toContain('"self"?')
+	})
+})
+
 describe('describeFaultLine', () => {
 	it('lists the keys declared where an undeclared key sits', () => {
 		expect(
@@ -443,10 +543,23 @@ describe('describeFaultLine', () => {
 		).toBe('page.limti: extra; this key is not declared, remove it or use a declared key: limit')
 	})
 
-	it('says only to remove a key where nothing is declared', () => {
+	it('tells the author what to supply when the tool declares no arguments', () => {
 		expect(describeFaultLine({ reason: 'extra', path: ['x'] }, CLOSED_PARAMETERS)).toBe(
-			'x: extra; this key is not declared, remove it',
+			"x: extra; this tool declares no arguments, so remove this key; to accept it, the tool's author must supply contract or parameters, or strict: false",
 		)
+	})
+
+	it('says only to remove a key under a nested object that declares nothing', () => {
+		expect(
+			describeFaultLine(
+				{ reason: 'extra', path: ['page', 'x'] },
+				{
+					type: 'object',
+					properties: { page: { type: 'object', properties: {}, additionalProperties: false } },
+					additionalProperties: false,
+				},
+			),
+		).toBe('page.x: extra; this key is not declared, remove it')
 	})
 
 	it('bounds and encodes the declared keys', () => {
@@ -498,38 +611,85 @@ describe('describeFaultLine', () => {
 		expect(line.endsWith(' and 38 more')).toBe(true)
 	})
 
-	it('says what a variant must be, with the schema of the path when it is short', () => {
-		const forms = { anyOf: [{ type: 'integer' }, { type: 'boolean' }] } as const
-
+	it('says what a variant must be, naming each declared form', () => {
 		expect(
 			describeFaultLine(
 				{ reason: 'variant', path: ['limit'], variants: 2 },
-				{ type: 'object', properties: { limit: forms } },
+				{
+					type: 'object',
+					properties: { limit: { anyOf: [{ type: 'integer' }, { type: 'boolean' }] } },
+				},
 			),
 		).toBe(
-			`limit: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares: ${JSON.stringify(forms)}`,
+			'limit: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares, one of: integer or boolean',
 		)
 	})
 
-	it('leaves out a schema longer than its limit', () => {
-		const forms = {
-			anyOf: Array.from({ length: 12 }, (_, index) => ({ enum: [`form${String(index)}`] })),
-		}
+	it('keeps the keys and types of each form past the size the whole schema would take', () => {
+		const city = {
+			type: 'object',
+			properties: { city: { type: 'string' }, region: { type: 'string' } },
+			required: ['city'],
+			additionalProperties: false,
+		} as const
+		const zip = {
+			type: 'object',
+			properties: { zip: { type: 'number' }, plus: { type: 'number' } },
+			required: ['zip'],
+			additionalProperties: false,
+		} as const
+		const forms = { anyOf: [city, zip] }
 
 		expect(JSON.stringify(forms).length).toBeGreaterThan(REFUSAL_SCHEMA_LIMIT)
 		expect(
 			describeFaultLine(
-				{ reason: 'variant', path: ['limit'], variants: 12 },
-				{ type: 'object', properties: { limit: forms } },
+				{ reason: 'variant', path: ['choice'], variants: 2 },
+				{ type: 'object', properties: { choice: forms } },
 			),
 		).toBe(
-			'limit: variant; the value matches none of the 12 declared forms; send it exactly as the schema declares',
+			'choice: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares, one of: {"city": string, "region"?: string} or {"zip": number, "plus"?: number}',
 		)
 	})
 
+	it('bounds the forms it names and says how many it left out', () => {
+		const forms = {
+			anyOf: Array.from({ length: REFUSAL_LIST_LIMIT + 4 }, (_, index) => ({
+				enum: [`form${String(index)}`],
+			})),
+		}
+
+		const line = describeFaultLine(
+			{ reason: 'variant', path: ['limit'], variants: REFUSAL_LIST_LIMIT + 4 },
+			{ type: 'object', properties: { limit: forms } },
+		)
+
+		expect(line).toContain('"form0" or "form1"')
+		expect(line).not.toContain(`"form${String(REFUSAL_LIST_LIMIT)}"`)
+		expect(line.endsWith(' and 4 more')).toBe(true)
+	})
+
+	it('keeps a line within its share of the text however wide each form is', () => {
+		const properties = Object.fromEntries(
+			Array.from({ length: 40 }, (_, index) => [`${'k'.repeat(5000)}${String(index)}`, {}]),
+		)
+		const forms = {
+			anyOf: Array.from({ length: REFUSAL_LIST_LIMIT }, () => ({
+				type: 'object' as const,
+				properties,
+			})),
+		}
+
+		const line = describeFaultLine(
+			{ reason: 'variant', path: ['wide'], variants: REFUSAL_LIST_LIMIT },
+			{ type: 'object', properties: { wide: forms } },
+		)
+
+		expect(line.length).toBeLessThan(REFUSAL_TEXT_LIMIT - 80)
+	})
+
 	it('says what a oneOf must be, whether it matched none or several', () => {
-		const forms = { oneOf: [{ type: 'object' }, { type: 'object' }] } as const
-		const tail = `send it exactly as the schema declares: ${JSON.stringify(forms)}`
+		const forms = { oneOf: [{ type: 'object' }, { type: 'string' }] } as const
+		const tail = 'send it exactly as the schema declares, one of: object or string'
 
 		expect(describeFaultLine({ reason: 'oneOf', path: [], matched: 0 }, forms)).toBe(
 			`: oneOf; the value matches none of the 2 declared forms; ${tail}`,
