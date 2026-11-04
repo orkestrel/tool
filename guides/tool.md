@@ -423,7 +423,7 @@ values by reference.
 
 The leaf coercions `parse` publishes stay accepted: `'30.0'` reaches the handler as `30`, `'true'`
 as `true`, and a finite number as its string, because a model's argument text is what a tool receives.
-`anyOf: [T, { type: 'null' }]` converts to a nullable rather than a union, so `'5'` reaches the handler
+`anyOf: [T, { type: 'null' }]` and `type: [T, 'null']` convert to a nullable rather than a union, so `'5'` reaches the handler
 of an `Optional[int]` as `5`, and a refusal there names the inner fault. A `parameters` root with
 `properties` and no `type` compiles as `{ type: 'object', ...parameters }` and stays advertised verbatim,
 because a tool's arguments are always a record. A nested node with `properties` and no `type` keeps its

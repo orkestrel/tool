@@ -468,6 +468,23 @@ describe('Tool', () => {
 		expect(refused.error.message).toBe('limit: type; expected integer; received "many"')
 	})
 
+	it('repairs the same way through a nullable spelled as a type list', () => {
+		const tool = new Tool({
+			name: 'search',
+			parameters: { type: 'object', properties: { limit: { type: ['integer', 'null'] } } },
+			execute: (args) => args,
+		})
+
+		expect(tool.execute({ limit: '5' }, context)).toEqual({ limit: 5 })
+		expect(tool.execute({ limit: null }, context)).toEqual({ limit: null })
+
+		const refused = attempt(() => tool.execute({ limit: 'many' }, context))
+		expect(refused.success).toBe(false)
+		if (refused.success || !isToolError(refused.error))
+			throw new Error('Expected an argument error')
+		expect(refused.error.message).toBe('limit: type; expected integer; received "many"')
+	})
+
 	it('reports the inner fault of a nullable closed object, with its declared keys', () => {
 		const tool = new Tool({
 			name: 'search',
