@@ -1,4 +1,4 @@
-import type { ContractShape, Failure, Fault, Success } from '@orkestrel/contract'
+import type { AuditFault, ContractShape, Failure, Success } from '@orkestrel/contract'
 import type { EmitterErrorHandler, EmitterHooks, EmitterInterface } from '@orkestrel/emitter'
 
 /** Carries the signal and consumer-asserted identity for an execution. */
@@ -19,20 +19,21 @@ export interface ToolAnnotations {
 	readonly consequential?: boolean
 }
 
-/** Identifies a schema conflict or an argument validation failure. */
+/** Identifies a refused tool declaration or refused call arguments. */
 export type ToolErrorCode = 'SCHEMA' | 'ARGUMENTS'
 
-/** Carries the structured faults behind an argument validation failure. */
+/** Carries the structured faults behind an argument refusal. */
 export interface ToolErrorContext {
-	/** Holds the contract's full parse-fault report. */
-	readonly faults?: readonly Fault[]
+	/** Holds every fault the refusal reports, at most `FAULT_LIMIT` of them. */
+	readonly faults?: readonly AuditFault[]
 }
 
 /**
  * Describes a tool as advertised to a caller.
  *
  * @remarks
- * `parameters` is an open JSON Schema record describing the arguments the tool accepts.
+ * `parameters` is an open JSON Schema record describing the arguments the tool accepts. A `Tool`
+ * always advertises one; another implementation of `ToolInterface` can omit it.
  */
 export interface ToolDefinition {
 	/** Identifies the tool a caller selects. */
@@ -82,10 +83,11 @@ export interface ToolSuccess extends Success<unknown> {
  * Reports the failed outcome of executing a {@link ToolCall}.
  *
  * @remarks
- * `error` is the failure message: an unknown tool name, an `Error`'s message, or
- * a String-converted throw. The registry carries no further structure. An
+ * `error` is the failure message: a malformed call, an unknown tool name, an `Error`'s
+ * message, or a String-converted throw. The registry carries no further structure. An
  * in-process caller needing a typed error calls `tools.tool(name)`, then
- * `tool.execute(args, context)` in its own `try`/`catch`.
+ * `tool.execute(args, context)` in its own `try`/`catch`. A value that is not a `ToolCall`
+ * fails with `id` and `name` empty where that value held no string for them.
  */
 export interface ToolFailure extends Failure<string> {
 	/** Identifies the corresponding call. */
@@ -120,10 +122,10 @@ export interface ToolInterface extends ToolDefinition {
 	 * @remarks
 	 * Failures are not contained here: a synchronous throw propagates and an
 	 * asynchronous rejection rejects. {@link ToolManagerInterface.execute} is where a
-	 * call becomes a result. A configured contract refuses arguments with parse faults
-	 * before the handler runs, then forwards `contract.parse(args)`, an owned,
-	 * normalized copy in the schema's types with undeclared keys dropped; without a
-	 * contract, the raw record is forwarded unchanged.
+	 * call becomes a result. The door refuses a parse fault, an undeclared key of a closed
+	 * object, a report at `FAULT_LIMIT`, and a union fault before the handler runs, then
+	 * forwards `contract.parse(args)`, an owned copy in the schema's types. Under
+	 * `strict: false` nothing is checked and the raw record is forwarded unchanged.
 	 * Caller identity is forwarded without verification.
 	 * The second parameter is the execution context; caller identity is `context.caller`.
 	 * `Tool.execute` refuses nothing on an aborted signal; the manager checks the signal
@@ -132,6 +134,8 @@ export interface ToolInterface extends ToolDefinition {
 	 * @param args - The caller-supplied arguments record
 	 * @param context - The required signal and optional consumer-asserted caller identity
 	 * @returns The tool's synchronous or asynchronous result
+	 * @throws {ToolError} Thrown with code `ARGUMENTS` when the door refuses the arguments, and with
+	 *   code `SCHEMA` when a `parameters` schema cannot be compiled on its first call.
 	 */
 	execute(args: Readonly<Record<string, unknown>>, context: ToolContext): Promise<unknown> | unknown
 }
@@ -142,12 +146,20 @@ export interface ToolInterface extends ToolDefinition {
  * @remarks
  * `name` identifies the tool, `description` and `parameters` define what is advertised
  * to a caller, `summary` optionally replaces the advertised description, and `execute`
- * handles the caller-supplied arguments record and execution context. `contract`
- * derives the advertised parameters and checks arguments with `explain`; supplying
- * `parameters` alongside `contract` throws a `ToolError` with code `SCHEMA`.
+ * handles the caller-supplied arguments record and execution context. `contract` compiles
+ * at construction and derives the advertised parameters; `parameters` is advertised
+ * verbatim and compiles through the lenient `schemaToShape` on the first `execute`. With
+ * neither, the tool advertises and enforces `CLOSED_PARAMETERS`. Supplying `parameters`
+ * alongside `contract` throws a `ToolError` with code `SCHEMA`, as does a `name` that is
+ * not a non-empty trimmed string.
+ *
+ * `strict` mirrors the switch `@orkestrel/agent` and `@orkestrel/ndjson` name the same way. If
+ * `true`, `execute` runs the door on every call; if `false`, nothing is compiled for arguments
+ * and the raw record reaches the handler, the opt-out for a tool that validates for itself.
+ * Default: `true`.
  */
 export interface ToolOptions {
-	/** Identifies the tool a caller selects. */
+	/** Identifies the tool a caller selects: a non-empty string with no surrounding space. */
 	readonly name: string
 	/** Holds a display title for the tool. */
 	readonly title?: string
@@ -155,10 +167,12 @@ export interface ToolOptions {
 	readonly description?: string
 	/** Holds a concise description to advertise in place of the full description. */
 	readonly summary?: string
-	/** Holds the JSON Schema for the tool's arguments. */
+	/** Holds the JSON Schema for the tool's arguments, advertised verbatim and enforced leniently. */
 	readonly parameters?: Readonly<Record<string, unknown>>
 	/** Derives parameters and validates arguments before execution. */
 	readonly contract?: ContractShape
+	/** Runs the door before the handler when not `false`. Default: `true`. */
+	readonly strict?: boolean
 	/** Describes the tool's observable effects and content. */
 	readonly annotations?: ToolAnnotations
 	/**
@@ -210,9 +224,9 @@ export interface ToolManagerOptions {
  * @remarks
  * Tools are keyed by name in insertion order. Adding an existing name overwrites its
  * value without changing its position. Every call whose members are plain values
- * resolves to a {@link ToolResult}; missing tools and thrown handlers become error
- * results, and a call whose `id` or `name` accessor throws when read makes `execute`
- * reject instead. Batch execution preserves input order.
+ * resolves to a {@link ToolResult}; malformed calls, missing tools, and thrown handlers
+ * become error results, and a call whose `id` or `name` accessor throws when read makes
+ * `execute` reject instead. Batch execution preserves input order.
  * Registry changes publish synchronously through the owned emitter. A replacement
  * publishes `remove` for the previous instance, then `add` if the map still holds
  * that exact replacement after the removal listeners return.

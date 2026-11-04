@@ -11,7 +11,8 @@ import type {
 } from '../types.js'
 import { attempt, isArray, isError } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
-import { toolToDefinition } from '../helpers.js'
+import { buildCallRefusal, toolToDefinition } from '../helpers.js'
+import { isToolCall } from '../validators.js'
 
 /**
  * Represents an insertion-ordered tool registry with per-call error isolation.
@@ -19,8 +20,9 @@ import { toolToDefinition } from '../helpers.js'
  * @remarks
  * A repeated name overwrites the registered tool without changing its insertion
  * position. Definitions advertise `summary` in place of `description` when present.
- * Unknown names and handler throws resolve to error results; a call whose `id` or `name`
- * accessor throws when read makes its call, and the batch holding it, reject. Batch
+ * A value failing {@link isToolCall}, an unknown name, and a handler throw resolve to error
+ * results; a call whose `id` or `name` accessor throws when read makes its call, and the
+ * batch holding it, reject. Batch
  * execution preserves input order and isolates each call whose members are plain
  * values. Execution context is shared across a batch and forwarded unchanged. An
  * omitted context receives a non-aborted signal. A signal aborted before handler
@@ -32,10 +34,17 @@ import { toolToDefinition } from '../helpers.js'
  *
  * @example
  * ```ts
+ * import { numberShape, objectShape } from '@orkestrel/contract'
  * import { Tool, ToolManager } from '@orkestrel/tool'
  *
  * const tools = new ToolManager()
- * tools.add(new Tool({ name: 'add', execute: (args) => Number(args.x) + Number(args.y) }))
+ * tools.add(
+ * 	new Tool({
+ * 		name: 'add',
+ * 		contract: objectShape({ x: numberShape(), y: numberShape() }),
+ * 		execute: (args) => Number(args.x) + Number(args.y),
+ * 	}),
+ * )
  * const result = await tools.execute({
  * 	id: '1',
  * 	name: 'add',
@@ -124,6 +133,7 @@ export class ToolManager implements ToolManagerInterface {
 	}
 
 	async #run(call: ToolCall, context: ToolContext): Promise<ToolResult> {
+		if (!isToolCall(call)) return buildCallRefusal(call)
 		const tool = this.#tools.get(call.name)
 		if (tool === undefined) {
 			return {

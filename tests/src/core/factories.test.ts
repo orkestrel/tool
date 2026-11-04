@@ -2,7 +2,7 @@ import type { ToolManagerEventMap } from '@src/core'
 import { createRecorder, createRecorders } from '@orkestrel/test'
 import { Tool, ToolManager, createTool, createToolManager } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createToolCall } from '../../setup.js'
+import { OPEN_ARGUMENTS, createToolCall } from '../../setup.js'
 
 describe('tool factories', () => {
 	it('forwards initial registry hooks for add, remove, and clear', () => {
@@ -67,9 +67,17 @@ describe('tool factories', () => {
 		manager.destroy()
 	})
 
+	it('forwards the strict option to the tool it creates', () => {
+		const args = { x: 1 }
+		const tool = createTool({ name: 'raw', strict: false, execute: (received) => received })
+
+		expect(tool.execute(args, { signal: new AbortController().signal })).toBe(args)
+	})
+
 	it('creates a working tool', () => {
 		const tool = createTool({
 			name: 'echo',
+			contract: OPEN_ARGUMENTS,
 			execute: (args) => args.value,
 		})
 
@@ -82,7 +90,9 @@ describe('tool factories', () => {
 
 		expect(manager).toBeInstanceOf(ToolManager)
 		expect(manager.count).toBe(0)
-		manager.add(createTool({ name: 'echo', execute: (args) => args.value }))
+		manager.add(
+			createTool({ name: 'echo', contract: OPEN_ARGUMENTS, execute: (args) => args.value }),
+		)
 		await expect(
 			manager.execute(createToolCall('echo', { value: 'hello' }, 'factory')),
 		).resolves.toEqual({ id: 'factory', name: 'echo', success: true, value: 'hello' })
@@ -91,7 +101,7 @@ describe('tool factories', () => {
 	it('creates a registry that isolates and correlates mixed batches', async () => {
 		const manager = createToolManager()
 		manager.add([
-			createTool({ name: 'echo', execute: (args) => args.value }),
+			createTool({ name: 'echo', contract: OPEN_ARGUMENTS, execute: (args) => args.value }),
 			createTool({
 				name: 'boom',
 				execute: () => {

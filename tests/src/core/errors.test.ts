@@ -8,6 +8,27 @@ describe('isToolError', () => {
 		expect(isToolError(new ToolError('ARGUMENTS', 'failure', context))).toBe(true)
 	})
 
+	it('accepts an audit report carrying an extra fault', () => {
+		const context = { faults: [{ reason: 'extra' as const, path: ['extra'] }] }
+
+		expect(isToolError(new ToolError('ARGUMENTS', 'failure', context))).toBe(true)
+	})
+
+	it('refuses an extra fault whose path is not a path', () => {
+		const error = new ToolError('ARGUMENTS', 'failure')
+		Object.defineProperty(error, 'context', { value: { faults: [{ reason: 'extra', path: 5 }] } })
+
+		expect(isToolError(error)).toBe(false)
+	})
+
+	it('carries a cause through the error options and omits it otherwise', () => {
+		const cause = new Error('unreadable schema')
+
+		expect(new ToolError('SCHEMA', 'failure', undefined, { cause }).cause).toBe(cause)
+		expect(new ToolError('SCHEMA', 'failure')).not.toHaveProperty('cause')
+		expect(isToolError(new ToolError('SCHEMA', 'failure', undefined, { cause }))).toBe(true)
+	})
+
 	it('refuses an invalid indexed fault hidden by a replaced iterator', () => {
 		const faults = [42]
 		Object.defineProperty(faults, Symbol.iterator, {

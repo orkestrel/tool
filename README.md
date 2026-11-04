@@ -52,9 +52,10 @@ if (result.success) {
 }
 ```
 
-Handlers may be synchronous or asynchronous. An unknown name or a thrown handler becomes an
-error result instead of escaping, and a batch runs concurrently, stays isolated per call, and
-answers in input order.
+Handlers may be synchronous or asynchronous. The declared schema is enforced before the handler
+runs, and a tool that declares none takes no arguments; pass `strict: false` to forward a call
+unchecked. A refused call, an unknown name, or a thrown handler becomes an error result instead of
+escaping, and a batch runs concurrently, stays isolated per call, and answers in input order.
 
 Ready-made tools ship in `@orkestrel/toolbox`.
 

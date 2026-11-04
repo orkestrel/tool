@@ -35,10 +35,12 @@ await new GuideCommand({
 	reader: readInventory,
 	runner: createVitest,
 }).execute(async ({ files, report, rows }) => {
-	const { isRecord, parseJSON, numberShape, objectShape } = await import('@orkestrel/contract')
+	const { isRecord, parseJSON, numberShape, objectShape, stringShape } =
+		await import('@orkestrel/contract')
 	const { computeSymbolKey, findMissingSymbols } = await import('@orkestrel/guide')
 	const { requireValue } = await import('@orkestrel/test')
 	const {
+		CLOSED_PARAMETERS,
 		Tool,
 		ToolError,
 		createTool,
@@ -192,12 +194,17 @@ const add = createTool({
 	},
 	execute: (args) => Number(args.left) + Number(args.right),
 })`,
-				`import { Tool, createToolManager } from '@orkestrel/tool'
+				`import { objectShape, stringShape } from '@orkestrel/contract'
+import { Tool, createToolManager } from '@orkestrel/tool'
 
 const tools = createToolManager()
 tools.add(add) // the tool defined earlier
 tools.add([
-	new Tool({ name: 'echo', execute: (args) => args.value }),
+	new Tool({
+		name: 'echo',
+		contract: objectShape({ value: stringShape() }),
+		execute: (args) => args.value,
+	}),
 	new Tool({ name: 'now', description: 'Current epoch milliseconds.', execute: () => Date.now() }),
 ])
 
@@ -257,20 +264,21 @@ const tool = createTool({
 const context = { signal: new AbortController().signal }
 tool.execute({ amount: 3 }, context) // 3
 try {
-	tool.execute({ amount: 'invalid' }, context)
+	tool.execute({ amount: 'invalid', extra: 1 }, context)
 } catch (error) {
 	if (!isToolError(error)) throw error
 	const code: ToolErrorCode = error.code
 	code // 'ARGUMENTS'
 	const details: ToolErrorContext | undefined = error.context
-	details?.faults?.[0]?.reason // 'type'
-	error.message // 'amount: type; expected number; received "invalid"'
+	details?.faults?.[1]?.reason // 'extra'
+	error.message // 'amount: type; expected number; received "invalid"\\nextra: extra; this key is not declared, remove it'
 }
 const conflict = new ToolError('SCHEMA', 'Choose contract or parameters')
 conflict.code // 'SCHEMA'
 isToolError(conflict) // true
 isToolError(new Error('Unrelated')) // false`,
 				`import type { ToolAnnotations } from '@orkestrel/tool'
+import { objectShape, stringShape } from '@orkestrel/contract'
 import { createTool, toolToDefinition } from '@orkestrel/tool'
 
 const annotations: ToolAnnotations = { pure: true, untrusted: false, consequential: false }
@@ -279,6 +287,7 @@ const tool = createTool({
 	title: 'Echo',
 	description: 'Return the supplied value unchanged.',
 	summary: 'Echo a value.',
+	contract: objectShape({ value: stringShape() }),
 	annotations,
 	execute: (args) => args.value,
 })
@@ -296,7 +305,7 @@ const tools = createToolManager({
 		clear: () => events.push('clear'),
 	},
 })
-tools.add(createTool({ name: 'echo', execute: (args) => args.value }))
+tools.add(createTool({ name: 'echo', execute: () => 'original' }))
 tools.add(createTool({ name: 'echo', execute: () => 'replacement' }))
 tools.remove('echo')
 tools.clear()
@@ -325,7 +334,11 @@ tools.emitter.destroyed // true`,
 			const tools = createToolManager()
 			tools.add(add)
 			tools.add([
-				new Tool({ name: 'echo', execute: (args) => args.value }),
+				new Tool({
+					name: 'echo',
+					contract: objectShape({ value: stringShape() }),
+					execute: (args) => args.value,
+				}),
 				new Tool({
 					name: 'now',
 					description: 'Current epoch milliseconds.',
@@ -346,8 +359,16 @@ tools.emitter.destroyed // true`,
 						required: ['left', 'right'],
 					},
 				},
-				{ name: 'echo' },
-				{ name: 'now', description: 'Current epoch milliseconds.' },
+				{
+					name: 'echo',
+					parameters: {
+						type: 'object',
+						properties: { value: { type: 'string' } },
+						required: ['value'],
+						additionalProperties: false,
+					},
+				},
+				{ name: 'now', description: 'Current epoch milliseconds.', parameters: CLOSED_PARAMETERS },
 			])
 			expect(tools.remove('echo')).toBe(true)
 			expect(tools.remove(['now', 'ghost'])).toBe(false)
@@ -434,12 +455,14 @@ tools.emitter.destroyed // true`,
 			expect(tool.execute({ amount: 3 }, context)).toBe(3)
 			expect.assertions(9)
 			try {
-				tool.execute({ amount: 'invalid' }, context)
+				tool.execute({ amount: 'invalid', extra: 1 }, context)
 			} catch (error) {
 				if (!isToolError(error)) throw error
 				expect(error.code).toBe('ARGUMENTS')
-				expect(error.context?.faults?.[0]?.reason).toBe('type')
-				expect(error.message).toBe('amount: type; expected number; received "invalid"')
+				expect(error.context?.faults?.[1]?.reason).toBe('extra')
+				expect(error.message).toBe(
+					'amount: type; expected number; received "invalid"\nextra: extra; this key is not declared, remove it',
+				)
 			}
 			const conflict = new ToolError('SCHEMA', 'Choose contract or parameters')
 			expect(conflict.code).toBe('SCHEMA')
@@ -447,7 +470,7 @@ tools.emitter.destroyed // true`,
 			expect(isToolError(new Error('Unrelated'))).toBe(false)
 			expect(guideText).toContain("code // 'ARGUMENTS'")
 			expect(guideText).toContain(
-				`error.message // 'amount: type; expected number; received "invalid"'`,
+				`error.message // 'amount: type; expected number; received "invalid"\\nextra: extra; this key is not declared, remove it'`,
 			)
 		})
 
@@ -458,6 +481,7 @@ tools.emitter.destroyed // true`,
 				title: 'Echo',
 				description: 'Return the supplied value unchanged.',
 				summary: 'Echo a value.',
+				contract: objectShape({ value: stringShape() }),
 				annotations,
 				execute: (args) => args.value,
 			})
@@ -479,7 +503,7 @@ tools.emitter.destroyed // true`,
 					clear: () => events.push('clear'),
 				},
 			})
-			tools.add(createTool({ name: 'echo', execute: (args) => args.value }))
+			tools.add(createTool({ name: 'echo', execute: () => 'original' }))
 			tools.add(createTool({ name: 'echo', execute: () => 'replacement' }))
 			tools.remove('echo')
 			tools.clear()

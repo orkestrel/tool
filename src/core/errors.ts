@@ -2,7 +2,7 @@ import type { ToolErrorCode, ToolErrorContext } from './types.js'
 import { arrayOf, holds, INTRINSICS, isFunction, isObject, isString } from '@orkestrel/contract'
 
 /**
- * Reports a schema conflict or argument validation failure with a machine-readable code.
+ * Reports a refused tool declaration or refused call arguments with a machine-readable code.
  *
  * @example
  * ```ts
@@ -17,8 +17,13 @@ export class ToolError extends Error {
 	readonly code: ToolErrorCode
 	readonly context?: ToolErrorContext
 
-	constructor(code: ToolErrorCode, message: string, context?: ToolErrorContext) {
-		super(message)
+	constructor(
+		code: ToolErrorCode,
+		message: string,
+		context?: ToolErrorContext,
+		options?: ErrorOptions,
+	) {
+		super(message, options)
 		INTRINSICS.define(this, Symbol.for('@orkestrel/tool.ToolError'), { value: this })
 		this.code = code
 		if (context !== undefined) this.context = context
@@ -60,6 +65,7 @@ export function isToolError(value: unknown): value is ToolError {
 			const path: unknown = INTRINSICS.reflect.read(fault, 'path')
 			if (!isString(path) && !arrayOf(isString)(path)) return false
 			const reason: unknown = INTRINSICS.reflect.read(fault, 'reason')
+			if (reason === 'extra') return true
 			if (reason === 'variant') {
 				return typeof INTRINSICS.reflect.read(fault, 'variants') === 'number'
 			}

@@ -1,6 +1,6 @@
 import type { ToolContext, ToolInterface, ToolManagerEventMap } from '@src/core'
 import { numberShape, objectShape } from '@orkestrel/contract'
-import { Tool, ToolManager } from '@src/core'
+import { CLOSED_PARAMETERS, Tool, ToolManager } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import {
 	createRecorder,
@@ -9,7 +9,13 @@ import {
 	waitForAbort,
 	waitForDelay,
 } from '@orkestrel/test'
-import { createToolCall, refuseConversion } from '../../../setup.js'
+import {
+	MALFORMED_CALLS,
+	OPEN_ARGUMENTS,
+	createToolCall,
+	createUnreadableSchema,
+	refuseConversion,
+} from '../../../setup.js'
 
 describe('ToolManager registry', () => {
 	it('starts empty', () => {
@@ -81,7 +87,7 @@ describe('ToolManager registry', () => {
 		expect(manager.tool('a')?.description).toBe('third')
 	})
 
-	it('projects plain definitions and omits absent optional keys', () => {
+	it('projects plain definitions and advertises the closed schema of a tool that declares none', () => {
 		const parameters = { type: 'object', properties: { a: { type: 'number' } } }
 		const manager = new ToolManager()
 		manager.add([
@@ -95,12 +101,11 @@ describe('ToolManager registry', () => {
 
 		expect(definitions).toEqual([
 			{ name: 'full', description: 'Full', parameters },
-			{ name: 'description', description: 'Description' },
+			{ name: 'description', description: 'Description', parameters: CLOSED_PARAMETERS },
 			{ name: 'parameters', parameters },
-			{ name: 'bare' },
+			{ name: 'bare', parameters: CLOSED_PARAMETERS },
 		])
 		expect('execute' in requireValue(definitions[0])).toBe(false)
-		expect('parameters' in requireValue(definitions[1])).toBe(false)
 		expect('description' in requireValue(definitions[2])).toBe(false)
 		expect('description' in requireValue(definitions[3])).toBe(false)
 		expect(requireValue(definitions[0]).parameters).toBe(parameters)
@@ -120,9 +125,9 @@ describe('ToolManager registry', () => {
 		])
 
 		expect(manager.definitions()).toEqual([
-			{ name: 'summary', description: 'A concise explanation.' },
-			{ name: 'full', description: 'Full only.' },
-			{ name: 'bare' },
+			{ name: 'summary', description: 'A concise explanation.', parameters: CLOSED_PARAMETERS },
+			{ name: 'full', description: 'Full only.', parameters: CLOSED_PARAMETERS },
+			{ name: 'bare', parameters: CLOSED_PARAMETERS },
 		])
 		expect(manager.tool('summary')?.description).toBe('A detailed explanation.')
 	})
@@ -452,7 +457,7 @@ describe('ToolManager events', () => {
 			manager.emitter,
 			['add', 'remove', 'clear'],
 		)
-		const tool = new Tool({ name: 'echo', execute: (args) => args.value })
+		const tool = new Tool({ name: 'echo', contract: OPEN_ARGUMENTS, execute: (args) => args.value })
 		manager.add(tool)
 		expect(recorders.add.calls).toEqual([[tool]])
 		recorders.add.clear()
@@ -481,10 +486,12 @@ describe('ToolManager execution', () => {
 		manager.add([
 			new Tool({
 				name: 'add',
+				contract: OPEN_ARGUMENTS,
 				execute: (args) => Number(args.a) + Number(args.b),
 			}),
 			new Tool({
 				name: 'echo',
+				contract: OPEN_ARGUMENTS,
 				execute: async (args) => {
 					await Promise.resolve()
 					return args.text
@@ -503,12 +510,13 @@ describe('ToolManager execution', () => {
 		)
 	})
 
-	it('forwards the exact arguments record, including an empty record', async () => {
+	it('forwards the exact arguments record under strict false, including an empty record', async () => {
 		const seen: Array<Readonly<Record<string, unknown>>> = []
 		const manager = new ToolManager()
 		manager.add(
 			new Tool({
 				name: 'capture',
+				strict: false,
 				execute: (args) => {
 					seen.push(args)
 					return 'ok'
@@ -618,6 +626,94 @@ describe('ToolManager execution', () => {
 			},
 		)
 		expect(recorder.count).toBe(0)
+	})
+
+	it('reports every fault of a refused call in the failure text', async () => {
+		const manager = new ToolManager()
+		manager.add(
+			new Tool({
+				name: 'amount',
+				contract: objectShape({ amount: numberShape() }),
+				execute: () => 'ran',
+			}),
+		)
+
+		await expect(
+			manager.execute(createToolCall('amount', { amount: 'invalid', extra: 1 })),
+		).resolves.toEqual({
+			id: 'call',
+			name: 'amount',
+			success: false,
+			error:
+				'amount: type; expected number; received "invalid"\nextra: extra; this key is not declared, remove it',
+		})
+	})
+
+	it('refuses a tool that declares nothing when a call sends a key', async () => {
+		const entered = createRecorder<[]>()
+		const manager = new ToolManager()
+		manager.add(new Tool({ name: 'bare', execute: entered.handler }))
+
+		await expect(manager.execute(createToolCall('bare', { x: 1 }))).resolves.toEqual({
+			id: 'call',
+			name: 'bare',
+			success: false,
+			error: 'x: extra; this key is not declared, remove it',
+		})
+		expect(entered.count).toBe(0)
+	})
+
+	it('reports a schema that cannot be read as a failure naming the tool', async () => {
+		const entered = createRecorder<[]>()
+		const manager = new ToolManager()
+		manager.add(
+			new Tool({ name: 'broken', parameters: createUnreadableSchema(), execute: entered.handler }),
+		)
+
+		const result = await manager.execute(createToolCall('broken'))
+
+		expect(result).toEqual({
+			id: 'call',
+			name: 'broken',
+			success: false,
+			error:
+				'Tool "broken" cannot compile its parameters schema; pass a JSON Schema built from plain values, or set strict: false to forward arguments unchecked',
+		})
+		expect(entered.count).toBe(0)
+	})
+
+	for (const [title, call, id, name] of MALFORMED_CALLS) {
+		it(`refuses a call with ${title} before any handler`, async () => {
+			const entered = createRecorder<[]>()
+			const manager = new ToolManager()
+			manager.add(new Tool({ name: 'capture', strict: false, execute: entered.handler }))
+
+			await expect(Reflect.apply(manager.execute, manager, [call])).resolves.toEqual({
+				id,
+				name,
+				success: false,
+				error:
+					'malformed call: a call needs a string id, a string name, and a plain record of arguments',
+			})
+			expect(entered.count).toBe(0)
+		})
+	}
+
+	it('answers a malformed call inside a batch and runs its siblings', async () => {
+		const manager = new ToolManager()
+		manager.add(new Tool({ name: 'zero', execute: () => 0 }))
+		const batch: unknown = [createToolCall('zero', {}, 'first'), { id: 'second', name: 'zero' }]
+
+		await expect(Reflect.apply(manager.execute, manager, [batch])).resolves.toEqual([
+			{ id: 'first', name: 'zero', success: true, value: 0 },
+			{
+				id: 'second',
+				name: 'zero',
+				success: false,
+				error:
+					'malformed call: a call needs a string id, a string name, and a plain record of arguments',
+			},
+		])
 	})
 
 	it('preserves falsy, null, and undefined success values', async () => {
@@ -825,7 +921,13 @@ describe('ToolManager execution', () => {
 		// getter throws leaves no result to build and `execute` rejects instead. This is the
 		// qualification `ToolResult` and the guide carry; it is not a handler failure.
 		const manager = new ToolManager()
-		manager.add(new Tool({ name: 'add', execute: (args) => Number(args.a) + Number(args.b) }))
+		manager.add(
+			new Tool({
+				name: 'add',
+				contract: OPEN_ARGUMENTS,
+				execute: (args) => Number(args.a) + Number(args.b),
+			}),
+		)
 		const call = createToolCall('add', { a: 1, b: 1 }, 'hostile')
 		Object.defineProperty(call, 'id', {
 			get: () => {
@@ -878,6 +980,7 @@ describe('ToolManager batch execution', () => {
 		manager.add(
 			new Tool({
 				name: 'batch',
+				contract: OPEN_ARGUMENTS,
 				execute: async (args, context) => {
 					recorder.handler(context)
 					if (args.value === 'fail') throw new Error('batch failure')
@@ -1006,6 +1109,7 @@ describe('ToolManager batch execution', () => {
 		manager.add([
 			new Tool({
 				name: 'add',
+				contract: OPEN_ARGUMENTS,
 				execute: (args) => Number(args.a) + Number(args.b),
 			}),
 			new Tool({
@@ -1108,7 +1212,7 @@ describe('ToolManager batch execution', () => {
 
 	it('keeps duplicate ids as distinct positional calls', async () => {
 		const manager = new ToolManager()
-		manager.add(new Tool({ name: 'echo', execute: (args) => args.value }))
+		manager.add(new Tool({ name: 'echo', contract: OPEN_ARGUMENTS, execute: (args) => args.value }))
 
 		const results = await manager.execute([
 			createToolCall('echo', { value: 'first' }, 'same'),
@@ -1126,6 +1230,7 @@ describe('ToolManager batch execution', () => {
 		manager.add(
 			new Tool({
 				name: 'square',
+				contract: OPEN_ARGUMENTS,
 				execute: (args) => Number(args.value) * Number(args.value),
 			}),
 		)

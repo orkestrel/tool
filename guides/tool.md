@@ -11,7 +11,7 @@ call whose shape is data, so whoever calls it can discover it, present it, and i
 knowing anything about the code behind it.
 
 `Tool` and `ToolManager` carry the runtime. A `Tool` is inert — a definition plus a handler, with
-no lifecycle. A configured contract validates arguments before its handler runs. A `ToolManager`
+no lifecycle. Every call passes its door before the handler runs. A `ToolManager`
 is the live surface a caller holds: it hands `definitions()` outward, takes a `ToolCall` back, and
 answers with a `ToolResult`, a result rather than a throw for a call whose members are plain
 values. Tools stay in the map by name in insertion order. Everything else in this module is the
@@ -26,7 +26,8 @@ capability to a remote client, a backend dispatching a named operation. `@orkest
 
 **Mechanism only.** This runtime advertises, dispatches, and contains failure. It transports
 nothing, authorizes no call, and ships no concrete tools. A `contract` derives the advertised
-parameter schema and validates arguments; `parameters` alone remains descriptive. Caller identity
+parameter schema, `parameters` is advertised verbatim, and the door enforces either on every call;
+a tool with neither takes no arguments, and `strict: false` forwards a call unchecked. Caller identity
 in the execution context is consumer-asserted and forwarded without verification. Each trust
 decision belongs to the invoking consumer, to a policy layer, or to the tool itself. Progress
 reporting belongs there too: it is a property of the invoking consumer's execution context, one
@@ -48,7 +49,7 @@ optional field the caller did not supply is absent from the value.
 | `ToolCall`             | interface | `{ id, name, arguments }`                                                                                                                                        | Describes one request to run a named tool.                                       |
 | `ToolSuccess`          | interface | `{ id, name }`                                                                                                                                                   | Reports the successful outcome of executing a `ToolCall`.                        |
 | `ToolFailure`          | interface | `{ id, name }`                                                                                                                                                   | Reports the failed outcome of executing a `ToolCall`.                            |
-| `ToolOptions`          | interface | `{ name, title?, description?, summary?, parameters?, contract?, annotations?, execute }`                                                                        | Configures an executable tool.                                                   |
+| `ToolOptions`          | interface | `{ name, title?, description?, summary?, parameters?, contract?, strict?, annotations?, execute }`                                                               | Configures an executable tool.                                                   |
 | `ToolInterface`        | interface | `{ summary?, execute() }`                                                                                                                                        | Represents an executable tool: its advertised definition plus its local handler. |
 | `ToolManagerInterface` | interface | `{ count, emitter, add(), tool(), tools(), definitions(), execute(), remove(), clear(), destroy() }`                                                             | Represents a registry of executable tools with per-call error isolation.         |
 | `ToolManagerEventMap`  | type      | `{ readonly add: readonly [tool: ToolInterface]; readonly remove: readonly [tool: ToolInterface]; readonly clear: readonly [tools: readonly ToolInterface[]]; }` | Names the events a tool registry publishes.                                      |
@@ -56,8 +57,8 @@ optional field the caller did not supply is absent from the value.
 | `ToolResult`           | type      | `ToolSuccess \| ToolFailure`                                                                                                                                     | Represents the outcome of executing a `ToolCall`.                                |
 | `ToolContext`          | interface | `{ signal, caller? }`                                                                                                                                            | Carries the signal and consumer-asserted identity for an execution.              |
 | `ToolAnnotations`      | interface | `{ pure?, untrusted?, consequential? }`                                                                                                                          | Describes the observable effects and content of a tool.                          |
-| `ToolErrorCode`        | type      | `'SCHEMA' \| 'ARGUMENTS'`                                                                                                                                        | Identifies a schema conflict or an argument validation failure.                  |
-| `ToolErrorContext`     | interface | `{ faults? }`                                                                                                                                                    | Carries the structured faults behind an argument validation failure.             |
+| `ToolErrorCode`        | type      | `'SCHEMA' \| 'ARGUMENTS'`                                                                                                                                        | Identifies a refused tool declaration or refused call arguments.                 |
+| `ToolErrorContext`     | interface | `{ faults? }`                                                                                                                                                    | Carries the structured faults behind an argument refusal.                        |
 
 `ToolInterface` and `ToolManagerInterface` list every member they declare or inherit. The
 call-signature members of each are documented under [Methods](#methods); the readonly `count` of
@@ -65,6 +66,15 @@ call-signature members of each are documented under [Methods](#methods); the rea
 method row. Its readonly `emitter` publishes `add`, `remove`, and `clear` with the payloads
 declared by `ToolManagerEventMap`. The `ToolManagerOptions` fields supply initial `on` hooks
 and an `error` handler for listener throws.
+
+### Constants
+
+The schemas a tool advertises when it declares none, from [`constants.ts`](../src/core/constants.ts).
+
+| Name                | Kind  | Signature                           | Summary                                                                                       |
+| ------------------- | ----- | ----------------------------------- | --------------------------------------------------------------------------------------------- |
+| `CLOSED_PARAMETERS` | const | `Readonly<Record<string, unknown>>` | Holds the schema a tool that declares nothing advertises and enforces: a closed empty object. |
+| `OPEN_PARAMETERS`   | const | `Readonly<Record<string, unknown>>` | Holds the schema a raw tool that declares nothing advertises: an open object.                 |
 
 ### Validators
 
@@ -76,11 +86,14 @@ The call-envelope guard, from [`validators.ts`](../src/core/validators.ts).
 
 ### Helpers
 
-The advertised-definition projection, from [`helpers.ts`](../src/core/helpers.ts).
+The advertised-definition projection and the door's report, from [`helpers.ts`](../src/core/helpers.ts).
 
-| Name               | Kind     | Signature                                 | Summary                                                                                                                                                                                        |
-| ------------------ | -------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `toolToDefinition` | function | `(tool: ToolInterface) => ToolDefinition` | Projects a tool onto the plain definition advertised to a caller, advertising an authored `summary` in place of the full description and carrying `parameters` and `annotations` by reference. |
+| Name               | Kind     | Signature                                                                         | Summary                                                                                                                                                                                        |
+| ------------------ | -------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `toolToDefinition` | function | `(tool: ToolInterface) => ToolDefinition`                                         | Projects a tool onto the plain definition advertised to a caller, advertising an authored `summary` in place of the full description and carrying `parameters` and `annotations` by reference. |
+| `scanFaults`       | function | `(contract: ContractInterface<unknown>, value: unknown) => readonly AuditFault[]` | Walks an argument record through a contract's reports and returns the faults the Tool door refuses, empty when the record may proceed to `parse`.                                              |
+| `describeFaults`   | function | `(faults: readonly AuditFault[]) => string`                                       | Describes a fault report as text a caller corrects from, one fault per line.                                                                                                                   |
+| `buildCallRefusal` | function | `(call: unknown) => ToolFailure`                                                  | Builds the failure a registry answers with for a value that is not a `ToolCall`, carrying each of its `id` and `name` that is a string and leaving the other empty.                            |
 
 ### Factories
 
@@ -98,21 +111,23 @@ The implementing classes, from [`Tool.ts`](../src/core/tools/Tool.ts) and
 [`ToolManager.ts`](../src/core/tools/ToolManager.ts) — each documented in full under its own
 heading following this table.
 
-| Name          | Kind  | Signature                                                                             | Summary                                                                                |
-| ------------- | ----- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `Tool`        | class | `new (options: ToolOptions) => ToolInterface`                                         | Binds an executable tool definition to a handler.                                      |
-| `ToolManager` | class | `new (options?: ToolManagerOptions) => ToolManagerInterface`                          | Represents an insertion-ordered tool registry with per-call error isolation.           |
-| `ToolError`   | class | `new (code: ToolErrorCode, message: string, context?: ToolErrorContext) => ToolError` | Reports a schema conflict or argument validation failure with a machine-readable code. |
+| Name          | Kind  | Signature                                                                                                     | Summary                                                                                    |
+| ------------- | ----- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `Tool`        | class | `new (options: ToolOptions) => ToolInterface`                                                                 | Binds an executable tool definition to a handler.                                          |
+| `ToolManager` | class | `new (options?: ToolManagerOptions) => ToolManagerInterface`                                                  | Represents an insertion-ordered tool registry with per-call error isolation.               |
+| `ToolError`   | class | `new (code: ToolErrorCode, message: string, context?: ToolErrorContext, options?: ErrorOptions) => ToolError` | Reports a refused tool declaration or refused call arguments with a machine-readable code. |
 
 ### `Tool`
 
 The implementing class of `ToolInterface`, from [`Tool.ts`](../src/core/tools/Tool.ts). It
 copies the fields it was given — omitting each optional one that was not supplied — and keeps
 the handler in a private field, so a tool's advertised shape cannot drift from what it executes.
-An explicit parameter schema and the execution context are forwarded by reference. Without a
-contract, the argument record retains its identity too. A contract compiles at construction and
-derives the parameter schema through the contract package's projection. The compiled contract
-checks arguments before handler entry and supplies its parsed copy to the handler.
+An explicit parameter schema and the execution context are forwarded by reference. A contract
+compiles at construction and derives the parameter schema through the contract package's
+projection; a `parameters` record compiles on the first `execute`. Either way the door checks
+arguments before handler entry and supplies its parsed copy to the handler. Under `strict: false`
+the argument record retains its identity. `name` must be a non-empty trimmed string, or the
+constructor throws code `SCHEMA`.
 `Tool` deliberately does not catch: a handler that throws throws, and per-call isolation belongs
 to the registry that dispatched it. See [`## Methods`](#methods) for its public call surface.
 
@@ -131,8 +146,9 @@ The guard recognizes self-branded errors across package copies and subclasses,
 validates the declared code and optional fault report, and refuses transparent proxies.
 
 The error class from [`errors.ts`](../src/core/errors.ts) extends `Error`. Its constructor takes
-`code`, `message`, and optional `context`. Direct tool execution throws an `ARGUMENTS` error with
-the full fault report in `context.faults`; the manager contains it as a message. Use `isToolError`
+`code`, `message`, optional `context`, and optional error `options` for a `cause`. Direct tool
+execution throws an `ARGUMENTS` error with the full fault report in `context.faults`; the manager
+contains it as a message. Use `isToolError`
 to narrow a caught value. See [Contract validation and errors](#contract-validation-and-errors)
 for an executed example.
 
@@ -195,12 +211,14 @@ const add = createTool({
 `new Tool({ … })` builds the same thing; reach for `createTool` where a call site must not name
 a class.
 
-An explicit `parameters` schema is descriptive runtime data, forwarded by reference. Declaring
-`required` in that schema tells the caller what to send; it does not validate the payload. Use the
-`contract` option when the runtime must validate arguments.
+An explicit `parameters` schema is advertised by reference, and the same schema is enforced:
+declaring `required` tells the caller what to send, and the door refuses a call that omits it. See
+[Contract validation and errors](#contract-validation-and-errors) for what the door does and for the
+`strict: false` opt-out. A tool that declares neither `contract` nor `parameters` takes no
+arguments: it advertises and enforces `CLOSED_PARAMETERS`.
 
 A handler receives a `Readonly<Record<string, unknown>>` and a required `ToolContext`.
-Without a contract, that record is the original input; with a contract, it is the parsed value.
+The record is the parsed value, or the original input under `strict: false`.
 The context holds an `AbortSignal` and optional unverified caller identity. Handlers may omit
 unused parameters from their declaration. Every invocation still supplies the arguments and the
 context. A direct `tool.execute(args, context)` call must provide the context; the manager creates
@@ -216,12 +234,17 @@ A registry is a working set, not a global. Build one per caller, fill it with th
 caller is allowed to reach, and hand out its definitions:
 
 ```ts
+import { objectShape, stringShape } from '@orkestrel/contract'
 import { Tool, createToolManager } from '@orkestrel/tool'
 
 const tools = createToolManager()
 tools.add(add) // the tool defined earlier
 tools.add([
-	new Tool({ name: 'echo', execute: (args) => args.value }),
+	new Tool({
+		name: 'echo',
+		contract: objectShape({ value: stringShape() }),
+		execute: (args) => args.value,
+	}),
 	new Tool({ name: 'now', description: 'Current epoch milliseconds.', execute: () => Date.now() }),
 ])
 
@@ -241,8 +264,8 @@ Remove a name and add it again and it lands at the end, because the name is genu
 map. In a batch, later entries win over earlier ones with the same name.
 
 `definitions()` projects fresh plain objects on every call: `name`, followed by present `title`,
-`description`, `parameters`, and `annotations` fields. A summary replaces the advertised
-description. The schema and annotations retain their original identities. Nothing that arrives on
+`description`, `parameters`, and `annotations` fields. A `Tool` always has `parameters`. A summary
+replaces the advertised description. The schema and annotations retain their original identities. Nothing that arrives on
 a definition is a live handle on the registry — advertising cannot be used to reach the handlers.
 
 ## Calls and results
@@ -278,7 +301,8 @@ const batch = await tools.execute([
 
 `isToolCall` validates the envelope only: the `id`, the `name`, and that `arguments` is a plain
 record. The guard ignores extra fields without reading them. A call carries no execution context.
-The registered tool's contract, when configured, validates the arguments during execution.
+The registry applies the same guard to every call it receives, and the registered tool's door
+validates the arguments during execution.
 
 Execution context travels as a separate argument. This package adds neither the signal nor caller
 identity to definitions, schemas, calls, or results. A handler can explicitly return a context
@@ -286,8 +310,9 @@ member as its own value. The context and caller identity reach the handler uncha
 
 Execution always resolves for a call whose members are plain values; a call whose `id` or `name`
 accessor throws when read makes `execute` reject, because no correlated result can be built
-without them. An unknown name becomes `tool not found: <name>`; a synchronous throw and an
-asynchronous rejection are both contained; an `Error` contributes its `message`, and any other
+without them. A value failing `isToolCall` becomes a failure reading `malformed call` before any
+tool is reached, its `id` and `name` empty where it held no string for them. An unknown name becomes
+`tool not found: <name>`; a synchronous throw and an asynchronous rejection are both contained; an `Error` contributes its `message`, and any other
 thrown value is converted with `String`; a value whose conversion itself throws — a hostile
 `toString`, a throwing `message` getter, a null-prototype object — becomes the fixed message
 `Unknown thrown value`. Success and failure never mix in one result: a successful call carries
@@ -343,24 +368,44 @@ that handler and contains its throws as usual; an abort does not force a running
 ## Contract validation and errors
 
 A contract compiles at construction. Its schema projects to `parameters` through
-`schemaToParameters(createContract(shape).schema)` from `@orkestrel/contract`; an undefined
-projection leaves parameters absent. Supplying `contract` and `parameters` together throws a
-`ToolError` with code `SCHEMA`.
+`schemaToParameters(createContract(shape).schema)` from `@orkestrel/contract`. Construction errors
+from the dependency propagate unchanged, so an owned declaration fails early. A `parameters` record is advertised verbatim and compiles through
+the lenient `schemaToShape` on the first `execute`, memoized on the instance, so building many
+tools compiles nothing until a call. That conversion widens every keyword it cannot express, so the
+door refuses a subset of what the schema itself refuses and never more. A conversion failure, which
+only a schema that cannot be read produces, throws `ToolError` with code `SCHEMA` from `execute`,
+with the failure as its `cause`; a JSON-parsed schema never throws. Supplying `contract` and
+`parameters` together throws code `SCHEMA` at construction.
 
-The contract's `explain` method reports parse faults before the handler runs. It accepts coercible
-values, such as a numeric string for a number. After a clean report, `Tool.execute` forwards
-`contract.parse(args)`: the owned, normalized copy in the schema's types, with undeclared keys
-dropped. A handler cannot rely on undeclared input keys being present. Without a contract, the
-raw argument record is forwarded unchanged. A parse fault throws `ToolError` with code
-`ARGUMENTS`. The message names the first fault's path and reason, then its expected and received
-values when the fault carries them; a constraint fault also names its constraint and limit when
-present. Array paths join with `.`; string paths stay unchanged. A root array path is empty, so
-its message starts with `: `. The error's `context.faults` holds the full report. A `variant` fault
-carries `variants`, appended as `; variants <n>`; a `oneOf` fault carries `matched`, appended as
-`; matched <n>`. A missing field carries expected alone. Contract construction errors from the
-dependency propagate unchanged. If parsing returns a value that isn't a record after a clean
-explanation, execution throws `ToolError` with code `ARGUMENTS` and message
-`Arguments did not parse`, without `context`, before handler entry.
+Every call passes the door before the handler, in this order:
+
+1. A fault from `explain` refuses.
+2. An `extra` fault from `audit` refuses. A shape declared open with
+   `objectShape(properties, { additionalProperties: true })`, or a schema whose `additionalProperties`
+   is absent or `true`, is the one way to admit an undeclared key.
+3. An `audit` report at `FAULT_LIMIT` refuses, because its cap can hide an undeclared key.
+4. A `variant` or `oneOf` fault from `audit` refuses, because a union parses by declaration order, so
+   a coercion through one is not a repair.
+5. `contract.parse(args)` hands the handler an owned copy in the schema's types.
+
+The leaf coercions `parse` publishes stay accepted: `'30.0'` reaches the handler as `30`, `'true'`
+as `true`, and a finite number as its string, because a model's argument text is what a tool receives.
+
+A refusal throws `ToolError` with code `ARGUMENTS`. The message holds one line per fault: its path
+and reason, then its expected and received values when the fault carries them; a constraint fault
+also names its constraint and limit when present. An `extra` fault says to remove the key. Array paths
+join with `.`. A segment that is not a plain identifier is JSON-encoded and length-capped, because a
+key the caller sent is untrusted text. A root array path is empty, so its line starts with `: `. A
+`variant` fault appends `; variants <n>`, and a `oneOf` fault appends `; matched <n>`. A missing field
+carries expected alone. The error's `context.faults` holds the same report, at most `FAULT_LIMIT`
+entries, and a report at that limit closes with a line saying that it stops there. If parsing returns
+a value that isn't a record after a clean report, execution throws code `ARGUMENTS`, without `context`,
+before handler entry.
+
+`strict: false` is the raw passthrough for a tool that validates for itself: nothing is compiled for
+arguments, the raw record reaches the handler by identity, and the advertised schema stays as it was
+given. A `contract` still derives the advertised schema, and a tool that declares neither advertises
+`OPEN_PARAMETERS`.
 
 Use the guard to narrow an error at the direct execution boundary:
 
@@ -377,14 +422,14 @@ const tool = createTool({
 const context = { signal: new AbortController().signal }
 tool.execute({ amount: 3 }, context) // 3
 try {
-	tool.execute({ amount: 'invalid' }, context)
+	tool.execute({ amount: 'invalid', extra: 1 }, context)
 } catch (error) {
 	if (!isToolError(error)) throw error
 	const code: ToolErrorCode = error.code
 	code // 'ARGUMENTS'
 	const details: ToolErrorContext | undefined = error.context
-	details?.faults?.[0]?.reason // 'type'
-	error.message // 'amount: type; expected number; received "invalid"'
+	details?.faults?.[1]?.reason // 'extra'
+	error.message // 'amount: type; expected number; received "invalid"\nextra: extra; this key is not declared, remove it'
 }
 const conflict = new ToolError('SCHEMA', 'Choose contract or parameters')
 conflict.code // 'SCHEMA'
@@ -392,8 +437,9 @@ isToolError(conflict) // true
 isToolError(new Error('Unrelated')) // false
 ```
 
-The manager contains this same argument refusal as a `ToolFailure`; it carries the message rather
-than the error instance or fault report. `ToolError` extends `Error`, exposes its readonly `code`
+The manager contains this same argument refusal as a `ToolFailure`, and a `SCHEMA` failure from
+`execute` the same way, naming the tool in its message; each carries the message rather than the
+error instance or fault report. `ToolError` extends `Error`, exposes its readonly `code`
 and optional readonly `context`, and inherits the standard error methods.
 
 ## Advertising title and annotations
@@ -407,6 +453,7 @@ Project the advertising fields while keeping the detailed description on the too
 
 ```ts
 import type { ToolAnnotations } from '@orkestrel/tool'
+import { objectShape, stringShape } from '@orkestrel/contract'
 import { createTool, toolToDefinition } from '@orkestrel/tool'
 
 const annotations: ToolAnnotations = { pure: true, untrusted: false, consequential: false }
@@ -415,6 +462,7 @@ const tool = createTool({
 	title: 'Echo',
 	description: 'Return the supplied value unchanged.',
 	summary: 'Echo a value.',
+	contract: objectShape({ value: stringShape() }),
 	annotations,
 	execute: (args) => args.value,
 })
@@ -454,7 +502,7 @@ const tools = createToolManager({
 		clear: () => events.push('clear'),
 	},
 })
-tools.add(createTool({ name: 'echo', execute: (args) => args.value }))
+tools.add(createTool({ name: 'echo', execute: () => 'original' }))
 tools.add(createTool({ name: 'echo', execute: () => 'replacement' }))
 tools.remove('echo')
 tools.clear()
@@ -492,12 +540,12 @@ registers here unchanged.
 ## Tests
 
 - [`guides.test.ts`](../tests/guides.test.ts) — the `## Surface` ↔ `src/core` bijection, the `ToolInterface` ↔ `Tool` and `ToolManagerInterface` ↔ `ToolManager` method bijections, and the equality gate: every `Summary` cell against its declaration's description paragraph, the titled `Anatomy of a tool` fence against the `@example` block of that title (pinned so the titled pair cannot be retired silently), and the README pitch against this guide's tagline. It also runs the flagship fences, including `Observe registry changes`, and asserts the values their comments claim against byte-equal transcriptions.
-- [`Tool.test.ts`](../tests/src/core/tools/Tool.test.ts) — definition binding, optional-field omission, argument and context identity, contract validation, error diagnostics, return values, and direct error propagation.
-- [`ToolManager.test.ts`](../tests/src/core/tools/ToolManager.test.ts) — insertion order, overwrite and removal lifecycle, definition projection, cancellation, context sharing, and isolated single and batch execution. Event proofs cover registration before `add`, ordered batch additions, the installed replacement during `remove`, `remove` before replacement `add`, synchronous replacement re-entry, a third instance a removal listener installs during a replacement, deletion before `remove`, silent missing names, ordered batch removals, populated and empty `clear` snapshots by identity, emitter destruction after clearing, an empty registry after teardown listeners re-add a tool, sibling delivery during mid-emission destruction, silent additions after destruction, and execution without registry events.
+- [`Tool.test.ts`](../tests/src/core/tools/Tool.test.ts) — definition binding, optional-field omission, name refusal, context identity, the door over contracts, schemas, and undeclared tools, a schema value table the door must never refuse, first-call compilation, the `strict: false` passthrough, error diagnostics, return values, and direct error propagation.
+- [`ToolManager.test.ts`](../tests/src/core/tools/ToolManager.test.ts) — insertion order, overwrite and removal lifecycle, definition projection, malformed calls, cancellation, context sharing, and isolated single and batch execution. Event proofs cover registration before `add`, ordered batch additions, the installed replacement during `remove`, `remove` before replacement `add`, synchronous replacement re-entry, a third instance a removal listener installs during a replacement, deletion before `remove`, silent missing names, ordered batch removals, populated and empty `clear` snapshots by identity, emitter destruction after clearing, an empty registry after teardown listeners re-add a tool, sibling delivery during mid-emission destruction, silent additions after destruction, and execution without registry events.
 - [`factories.test.ts`](../tests/src/core/factories.test.ts) — factory construction, working instances, initial registry hooks in publication order, sibling listener isolation, and listener-error forwarding.
-- [`helpers.test.ts`](../tests/src/core/helpers.test.ts) — definition projection: summary preference, omitted optional keys, projected key order, schema identity, title and annotations forwarding, and a fresh object per call.
+- [`helpers.test.ts`](../tests/src/core/helpers.test.ts) — definition projection: summary preference, omitted optional keys, projected key order, schema identity, title and annotations forwarding, and a fresh object per call; the door's report over parse faults, undeclared keys, unions, and the fault limit; refusal text and its encoding of an untrusted key; and the malformed-call failure.
 - [`validators.test.ts`](../tests/src/core/validators.test.ts) — tool-call envelope boundaries: incomplete calls, wrong field types, and non-record arguments.
-- [`errors.test.ts`](../tests/src/core/errors.test.ts) — `isToolError` recognition, unrelated-value rejection, and hostile prototype containment.
+- [`errors.test.ts`](../tests/src/core/errors.test.ts) — `isToolError` recognition, an `extra` fault in a report, the `cause` option, unrelated-value rejection, and hostile prototype containment.
 
 ## See also
 

@@ -49,10 +49,17 @@ export function createTool(options: ToolOptions): ToolInterface {
  *
  * @example
  * ```ts
+ * import { objectShape, stringShape } from '@orkestrel/contract'
  * import { createTool, createToolManager } from '@orkestrel/tool'
  *
  * const tools = createToolManager()
- * tools.add(createTool({ name: 'echo', execute: (args) => args.value }))
+ * tools.add(
+ * 	createTool({
+ * 		name: 'echo',
+ * 		contract: objectShape({ value: stringShape() }),
+ * 		execute: (args) => args.value,
+ * 	}),
+ * )
  * const result = await tools.execute({
  * 	id: '1',
  * 	name: 'echo',
