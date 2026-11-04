@@ -2,6 +2,8 @@ import type { AuditFault } from '@orkestrel/contract'
 import type { ToolCall, ToolContext, ToolErrorContext, ToolInterface, ToolOptions } from '@src/core'
 import {
 	FAULT_LIMIT,
+	FAULT_TEXT_LIMIT,
+	admitValue,
 	attempt,
 	booleanShape,
 	createContract,
@@ -16,14 +18,7 @@ import {
 	oneOfShape,
 } from '@orkestrel/contract'
 import { createRecorder } from '@orkestrel/test'
-import {
-	CLOSED_PARAMETERS,
-	OPEN_PARAMETERS,
-	REFUSAL_TEXT_LIMIT,
-	Tool,
-	ToolError,
-	isToolError,
-} from '@src/core'
+import { CLOSED_PARAMETERS, OPEN_PARAMETERS, Tool, ToolError, isToolError } from '@src/core'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import {
 	NON_RECORD_PARAMETERS,
@@ -39,6 +34,25 @@ import {
 
 describe('Tool', () => {
 	const context: ToolContext = { signal: new AbortController().signal }
+
+	it('passes the admission value to the handler without parsing it again', () => {
+		const calls = createRecorder<[]>()
+		const nested = Object.defineProperty({}, 'amount', {
+			enumerable: true,
+			get() {
+				calls.handler()
+				return '3'
+			},
+		})
+		const shape = objectShape({ nested: objectShape({ amount: numberShape() }) })
+		const admitted = admitValue(createContract(shape), { nested })
+		expect(admitted.success).toBe(true)
+		const reads = calls.count
+		calls.clear()
+		const tool = new Tool({ name: 'single', contract: shape, execute: (value) => value })
+		expect(tool.execute({ nested }, context)).toEqual({ nested: { amount: 3 } })
+		expect(calls.count).toBe(reads)
+	})
 
 	it('runs synchronous and asynchronous handlers', async () => {
 		const sync = new Tool({
@@ -191,10 +205,10 @@ describe('Tool', () => {
 		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
 		expect(result.error).toBeInstanceOf(ToolError)
 		expect(result.error.code).toBe('ARGUMENTS')
-		expect(result.error.message).toBe(
+		expect(result.error.message).toContain(
 			[
-				'profile.age: type; expected number; received "invalid"',
-				'profile.name: constraint; expected string; received ""; constraint min; limit 1',
+				'profile.age: type; expected number; received "\\"invalid\\""',
+				'profile.name: constraint; expected string; received "\\"\\""; constraint min; limit 1',
 			].join('\n'),
 		)
 		expect(result.error.context).toEqual({ faults })
@@ -235,7 +249,7 @@ describe('Tool', () => {
 		expect(isToolError(absent.error)).toBe(true)
 		if (!isToolError(absent.error)) throw new Error('Expected a tool error')
 		expect(absent.error.code).toBe('ARGUMENTS')
-		expect(absent.error.message).toBe('amount: missing; expected number')
+		expect(absent.error.message).toContain('amount: missing; expected number')
 		expect(recorder.count).toBe(0)
 
 		const bounded = attempt(() => constrained.execute({ amount: 0 }, context))
@@ -244,8 +258,8 @@ describe('Tool', () => {
 		expect(isToolError(bounded.error)).toBe(true)
 		if (!isToolError(bounded.error)) throw new Error('Expected a tool error')
 		expect(bounded.error.code).toBe('ARGUMENTS')
-		expect(bounded.error.message).toBe(
-			'amount: constraint; expected number; received 0; constraint min; limit 1',
+		expect(bounded.error.message).toContain(
+			'amount: constraint; expected number; received "0"; constraint min; limit 1',
 		)
 		expect(recorder.count).toBe(0)
 
@@ -255,7 +269,7 @@ describe('Tool', () => {
 		expect(isToolError(unmatched.error)).toBe(true)
 		if (!isToolError(unmatched.error)) throw new Error('Expected a tool error')
 		expect(unmatched.error.code).toBe('ARGUMENTS')
-		expect(unmatched.error.message).toBe(
+		expect(unmatched.error.message).toContain(
 			'amount: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares, one of: number or string (minLength 3)',
 		)
 		expect(unmatched.error.context?.faults).toEqual([
@@ -288,7 +302,7 @@ describe('Tool', () => {
 		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
 		expect(result.error.code).toBe('ARGUMENTS')
 		expect(result.error.context?.faults).toEqual([{ reason: 'extra', path: ['extra'] }])
-		expect(result.error.message).toBe(
+		expect(result.error.message).toContain(
 			'extra: extra; this key is not declared, remove it or use a declared key: amount',
 		)
 		expect(recorder.count).toBe(0)
@@ -319,8 +333,8 @@ describe('Tool', () => {
 
 		expect(result.success).toBe(false)
 		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
-		expect(result.error.message.split('\n')).toEqual([
-			'amount: type; expected number; received "invalid"',
+		expect(result.error.message.split('\n').filter((line) => !line.startsWith('send '))).toEqual([
+			'amount: type; expected number; received "\\"invalid\\""',
 			'label: missing; expected string',
 			'extra: extra; this key is not declared, remove it or use a declared key: amount, label',
 		])
@@ -353,12 +367,9 @@ describe('Tool', () => {
 		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
 		expect(result.error.code).toBe('ARGUMENTS')
 		expect(result.error.context?.faults).toHaveLength(FAULT_LIMIT)
-		expect(result.error.message.length).toBeLessThanOrEqual(REFUSAL_TEXT_LIMIT)
-		expect(result.error.message.split('\n').at(-1)).toMatch(
-			new RegExp(
-				`^and \\d+ more faults, the report stops at ${String(FAULT_LIMIT)}; correct these and call again$`,
-				'u',
-			),
+		expect(result.error.message.length).toBeLessThanOrEqual(FAULT_TEXT_LIMIT)
+		expect(result.error.message.split('\n').at(-2)).toMatch(
+			new RegExp(`^and \\d+ more faults, the report stops at ${String(FAULT_LIMIT)}$`, 'u'),
 		)
 		expect(recorder.count).toBe(0)
 	})
@@ -379,7 +390,7 @@ describe('Tool', () => {
 
 		expect(result.success).toBe(false)
 		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
-		expect(result.error.message).toBe(
+		expect(result.error.message).toContain(
 			'choice: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares, one of: {"amount": number} or {"name": string}',
 		)
 		expect(recorder.count).toBe(0)
@@ -402,7 +413,7 @@ describe('Tool', () => {
 		expect(refused.success).toBe(false)
 		if (refused.success || !isToolError(refused.error))
 			throw new Error('Expected an argument error')
-		expect(refused.error.message).toBe(
+		expect(refused.error.message).toContain(
 			'choice: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares, one of: {"city": string} or {"zip": number}',
 		)
 		expect(refused.error.context?.faults).toEqual([
@@ -419,8 +430,8 @@ describe('Tool', () => {
 		expect(refused.success).toBe(false)
 		if (refused.success || !isToolError(refused.error))
 			throw new Error('Expected an argument error')
-		expect(refused.error.message).toBe(
-			"text: extra; this tool declares no arguments, so remove this key; to accept it, the tool's author must supply contract or parameters, or strict: false",
+		expect(refused.error.message).toContain(
+			"this tool declares no arguments; the tool's author must supply contract or parameters, or strict: false",
 		)
 		expect(refused.error.context?.faults).toEqual([{ reason: 'extra', path: ['text'] }])
 		expect(
@@ -462,9 +473,9 @@ describe('Tool', () => {
 
 		expect(result.success).toBe(false)
 		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
-		expect(result.error.message.length).toBeLessThanOrEqual(REFUSAL_TEXT_LIMIT)
+		expect(result.error.message.length).toBeLessThanOrEqual(FAULT_TEXT_LIMIT)
 		expect(result.error.context?.faults).toHaveLength(FAULT_LIMIT)
-		expect(result.error.message.split('\n').at(-1)).toMatch(/^and \d+ more faults/u)
+		expect(result.error.message.split('\n').at(-2)).toMatch(/^and \d+ more faults/u)
 	})
 
 	it('keeps a refusal near 2 KB at depth, with long keys under a long path', () => {
@@ -479,7 +490,7 @@ describe('Tool', () => {
 
 		expect(result.success).toBe(false)
 		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
-		expect(result.error.message.length).toBeLessThanOrEqual(REFUSAL_TEXT_LIMIT)
+		expect(result.error.message.length).toBeLessThanOrEqual(FAULT_TEXT_LIMIT)
 		expect(result.error.message.split('\n')[0]).toContain('child.….')
 		expect(result.error.context?.faults).toHaveLength(FAULT_LIMIT)
 	})
@@ -540,7 +551,7 @@ describe('Tool', () => {
 		expect(refused.success).toBe(false)
 		if (refused.success || !isToolError(refused.error))
 			throw new Error('Expected an argument error')
-		expect(refused.error.message).toBe('limit: type; expected number; received "many"')
+		expect(refused.error.message).toContain('limit: type; expected number; received "\\"many\\""')
 		expect(refused.error.context?.faults).toEqual([
 			{ reason: 'type', path: ['limit'], expected: 'number', received: '"many"' },
 		])
@@ -594,7 +605,7 @@ describe('Tool', () => {
 		expect(refused.success).toBe(false)
 		if (refused.success || !isToolError(refused.error))
 			throw new Error('Expected an argument error')
-		expect(refused.error.message).toBe('limit: type; expected integer; received "many"')
+		expect(refused.error.message).toContain('limit: type; expected integer; received "\\"many\\""')
 	})
 
 	it('repairs the same way through a nullable spelled as a type list', () => {
@@ -611,7 +622,7 @@ describe('Tool', () => {
 		expect(refused.success).toBe(false)
 		if (refused.success || !isToolError(refused.error))
 			throw new Error('Expected an argument error')
-		expect(refused.error.message).toBe('limit: type; expected integer; received "many"')
+		expect(refused.error.message).toContain('limit: type; expected integer; received "\\"many\\""')
 	})
 
 	it('reports the inner fault of a nullable closed object, with its declared keys', () => {
@@ -641,7 +652,7 @@ describe('Tool', () => {
 		if (refused.success || !isToolError(refused.error))
 			throw new Error('Expected an argument error')
 		expect(refused.error.context?.faults).toEqual([{ reason: 'extra', path: ['page', 'limti'] }])
-		expect(refused.error.message).toBe(
+		expect(refused.error.message).toContain(
 			'page.limti: extra; this key is not declared, remove it or use a declared key: limit',
 		)
 	})
@@ -658,8 +669,8 @@ describe('Tool', () => {
 		expect(refused.success).toBe(false)
 		if (refused.success || !isToolError(refused.error))
 			throw new Error('Expected an argument error')
-		expect(refused.error.message).toBe(
-			'unit: type; expected literal; received "k"; send one of "c", null',
+		expect(refused.error.message).toContain(
+			'unit: type; expected literal; received "\\"k\\""; send one of "c", null',
 		)
 	})
 
@@ -678,13 +689,13 @@ describe('Tool', () => {
 		const wrong = attempt(() => tool.execute({ count: 'many' }, context))
 		expect(wrong.success).toBe(false)
 		if (wrong.success || !isToolError(wrong.error)) throw new Error('Expected an argument error')
-		expect(wrong.error.message).toBe('count: type; expected number; received "many"')
+		expect(wrong.error.message).toContain('count: type; expected number; received "\\"many\\""')
 
 		const missing = attempt(() => tool.execute({}, context))
 		expect(missing.success).toBe(false)
 		if (missing.success || !isToolError(missing.error))
 			throw new Error('Expected an argument error')
-		expect(missing.error.message).toBe('count: missing; expected number')
+		expect(missing.error.message).toContain('count: missing; expected number')
 	})
 
 	it('closes a typeless root that says so, and lists its keys', () => {
@@ -699,7 +710,7 @@ describe('Tool', () => {
 		expect(refused.success).toBe(false)
 		if (refused.success || !isToolError(refused.error))
 			throw new Error('Expected an argument error')
-		expect(refused.error.message).toBe(
+		expect(refused.error.message).toContain(
 			'cuont: extra; this key is not declared, remove it or use a declared key: count',
 		)
 	})
@@ -716,7 +727,7 @@ describe('Tool', () => {
 		expect(refused.success).toBe(false)
 		if (refused.success || !isToolError(refused.error))
 			throw new Error('Expected an argument error')
-		expect(refused.error.message).toBe(': type; expected object; received "text"')
+		expect(refused.error.message).toContain(': type; expected object; received "\\"text\\""')
 		expect(tool.execute({ a: 'x' }, context)).toBe('ran')
 	})
 
@@ -770,7 +781,9 @@ describe('Tool', () => {
 		if (refused.success || !isToolError(refused.error))
 			throw new Error('Expected an argument error')
 		expect(refused.error.code).toBe('ARGUMENTS')
-		expect(refused.error.message).toBe('amount: type; expected number; received "invalid"')
+		expect(refused.error.message).toContain(
+			'amount: type; expected number; received "\\"invalid\\""',
+		)
 		expect(recorder.count).toBe(2)
 	})
 

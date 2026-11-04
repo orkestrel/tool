@@ -622,7 +622,8 @@ describe('ToolManager execution', () => {
 				id: 'call',
 				name: 'amount',
 				success: false,
-				error: 'amount: type; expected number; received "invalid"',
+				error:
+					'amount: type; expected number; received "\\"invalid\\""\nsend {"amount": number}; send values in their declared types without coercion',
 			},
 		)
 		expect(recorder.count).toBe(0)
@@ -645,7 +646,7 @@ describe('ToolManager execution', () => {
 			name: 'amount',
 			success: false,
 			error:
-				'amount: type; expected number; received "invalid"\nextra: extra; this key is not declared, remove it or use a declared key: amount',
+				'amount: type; expected number; received "\\"invalid\\""\nextra: extra; this key is not declared, remove it or use a declared key: amount\nsend {"amount": number}',
 		})
 	})
 
@@ -659,7 +660,7 @@ describe('ToolManager execution', () => {
 			name: 'bare',
 			success: false,
 			error:
-				"x: extra; this tool declares no arguments, so remove this key; to accept it, the tool's author must supply contract or parameters, or strict: false",
+				"x: extra; this key is not declared, remove it\nsend object; this tool declares no arguments; the tool's author must supply contract or parameters, or strict: false",
 		})
 		expect(entered.count).toBe(0)
 	})

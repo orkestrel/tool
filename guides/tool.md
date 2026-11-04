@@ -72,13 +72,10 @@ and an `error` handler for listener throws.
 The schemas a tool advertises when it declares none, and the bounds of a refusal, from
 [`constants.ts`](../src/core/constants.ts).
 
-| Name                   | Kind  | Signature                           | Summary                                                                                       |
-| ---------------------- | ----- | ----------------------------------- | --------------------------------------------------------------------------------------------- |
-| `CLOSED_PARAMETERS`    | const | `Readonly<Record<string, unknown>>` | Holds the schema a tool that declares nothing advertises and enforces: a closed empty object. |
-| `OPEN_PARAMETERS`      | const | `Readonly<Record<string, unknown>>` | Holds the schema a raw tool that declares nothing advertises: an open object.                 |
-| `REFUSAL_TEXT_LIMIT`   | const | `2048`                              | Caps at `2048` the characters of a refusal message, about 2 KB.                               |
-| `REFUSAL_LIST_LIMIT`   | const | `12`                                | Caps at `12` the declared keys or literal candidates one refusal line names.                  |
-| `REFUSAL_SCHEMA_LIMIT` | const | `160`                               | Caps at `160` the characters a union refusal line spends summarizing one declared form.       |
+| Name                | Kind  | Signature                           | Summary                                                                                       |
+| ------------------- | ----- | ----------------------------------- | --------------------------------------------------------------------------------------------- |
+| `CLOSED_PARAMETERS` | const | `Readonly<Record<string, unknown>>` | Holds the schema a tool that declares nothing advertises and enforces: a closed empty object. |
+| `OPEN_PARAMETERS`   | const | `Readonly<Record<string, unknown>>` | Holds the schema a raw tool that declares nothing advertises: an open object.                 |
 
 ### Validators
 
@@ -96,17 +93,8 @@ The advertised-definition projection, the door's report and its text, and the re
 | Name                 | Kind     | Signature                                                                              | Summary                                                                                                                                                                                        |
 | -------------------- | -------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `toolToDefinition`   | function | `(tool: ToolInterface) => ToolDefinition`                                              | Projects a tool onto the plain definition advertised to a caller, advertising an authored `summary` in place of the full description and carrying `parameters` and `annotations` by reference. |
-| `scanFaults`         | function | `(contract: ContractInterface<unknown>, value: unknown) => readonly AuditFault[]`      | Walks an argument record through a contract's reports and returns the faults the Tool door refuses, empty when the record may proceed to `parse`.                                              |
 | `parametersToSchema` | function | `(parameters: Readonly<Record<string, unknown>>) => Readonly<Record<string, unknown>>` | Projects a `parameters` record onto the schema its door compiles, reading a root with `properties` and no `type` as an object, because a tool's arguments are always a record.                 |
-| `extractPath`        | function | `(fault: AuditFault) => readonly string[]`                                             | Extracts a fault's path as its segments, reading a string path as one segment.                                                                                                                 |
-| `extractForms`       | function | `(schema: JSONSchema \| undefined) => readonly JSONSchema[]`                           | Extracts a schema's forms: the schema itself, then the arms of its `anyOf`, so a read looks through a nullable the same way everywhere.                                                        |
-| `extractSchema`      | function | `(schema: JSONSchema, path: readonly string[]) => JSONSchema \| undefined`             | Extracts the part of a schema a path reaches, through properties, array items, record values, and the arms of a union.                                                                         |
-| `renderPath`         | function | `(path: readonly string[]) => string`                                                  | Renders a path as text, encoding what a caller could have sent and eliding the middle of a long one.                                                                                           |
-| `renderList`         | function | `(entries: readonly string[]) => string`                                               | Renders a list as text, naming at most `REFUSAL_LIST_LIMIT` of its entries and counting the rest.                                                                                              |
-| `renderForm`         | function | `(schema: JSONSchema, room?: number) => string`                                        | Renders a schema as a short summary of what to send, such as `{"city": string, "note"?: string}`.                                                                                              |
-| `describeFaultLine`  | function | `(fault: AuditFault, schema: JSONSchema) => string`                                    | Describes one fault as the line a caller corrects from, naming what to send where the schema says.                                                                                             |
 | `readCall`           | function | `(call: unknown) => Readonly<Record<string, unknown>>`                                 | Reads a call's `id`, `name`, and `arguments` once into a plain record, so a guard and every later step see the same values.                                                                    |
-| `describeFaults`     | function | `(faults: readonly AuditFault[], schema: JSONSchema) => string`                        | Describes a fault report as text a caller corrects from, one fault per line, at most `REFUSAL_TEXT_LIMIT` characters in all.                                                                   |
 | `buildCallRefusal`   | function | `(call: unknown) => ToolFailure`                                                       | Builds the failure a registry answers with for a value that is not a `ToolCall`, carrying each of its `id` and `name` that is a string and leaving the other empty.                            |
 
 ### Factories
@@ -423,8 +411,10 @@ raw stay by reference. So `{ type: 'object' }` gives a null-prototype copy of th
 values by reference, and `parameters: {}` or a root `$ref` gives a plain top-level copy with nested
 values by reference.
 
-The leaf coercions `parse` publishes stay accepted: `'30.0'` reaches the handler as `30`, `'true'`
-as `true`, and a finite number as its string, because a model's argument text is what a tool receives.
+The shared lossless admission helper from `@orkestrel/contract` accepts `'30'` as `30`, `'true'`
+as `true`, and a finite number as its string. It refuses `'30.0'`, which changes the supplied text.
+The handler receives the admitted value without another parse. The argument snapshot remains
+in this package, and a union may retain that snapshot or its nested values by identity.
 `anyOf: [T, { type: 'null' }]` and `type: [T, 'null']` convert to a nullable rather than a union, so `'5'` reaches the handler
 of an `Optional[int]` as `5`, and a refusal there names the inner fault. A `parameters` root with
 `properties` and no `type` compiles as `{ type: 'object', ...parameters }` and stays advertised verbatim,
@@ -444,12 +434,12 @@ and reason, then its expected and received values when the fault carries them; a
 also names its constraint and limit when present. A missing field carries expected alone. Each line
 says what to send where the schema says so:
 
-- An `extra` line lists the keys declared at that path, at most `REFUSAL_LIST_LIMIT` of them.
-- A line on a literal names its candidates, at most `REFUSAL_LIST_LIMIT` of them.
+- An `extra` line lists the keys declared at that path, at most 12 of them.
+- A line on a literal names its candidates, at most 12 of them.
 - A `variant` or `oneOf` line says that the value matches none of the declared forms, or several where
   exactly one must match, and that it must be sent exactly as the schema declares. It summarizes each
   form, such as `{"city": string} or {"zip": number}`, with required keys first and optional keys marked
-  `?`. It names at most `REFUSAL_LIST_LIMIT` forms, each in at most `REFUSAL_SCHEMA_LIMIT` characters.
+  `?`. It names at most 12 forms, each in at most 160 UTF-16 code units characters.
 - An `extra` line at the root of a tool that declares no arguments tells the author to supply `contract`
   or `parameters`, or `strict: false`, because writing a handler before its schema is the ordinary first
   use.
@@ -462,9 +452,9 @@ Array paths join with `.`. A segment that is not a plain identifier is JSON-enco
 because a key the caller sent is untrusted text. A path of more than four segments past 120 characters
 keeps its first segment and its last three. A root array path is empty, so its line starts with `: `.
 
-The whole message stays within `REFUSAL_TEXT_LIMIT` characters, because it goes back to a model whose
-context window can be 2048 tokens and an over-window request refuses. It closes by saying how many more
-faults there are, and a report at `FAULT_LIMIT` also says that it stops there. The error's
+The whole message stays within 2048 UTF-16 code units, because it goes back to a model whose
+context window can be 2048 tokens and an over-window request refuses. It reserves room for omitted-fault and cap notices and a schema-derived send summary. Tool-specific
+correction and author guidance share that budget. The error's
 `context.faults` holds every fault up to `FAULT_LIMIT`, whatever the message shows. If parsing returns
 a value that isn't a record after a clean report, execution throws code `ARGUMENTS`, without `context`,
 before handler entry.
@@ -496,7 +486,7 @@ try {
 	code // 'ARGUMENTS'
 	const details: ToolErrorContext | undefined = error.context
 	details?.faults?.[1]?.reason // 'extra'
-	error.message // 'amount: type; expected number; received "invalid"\nextra: extra; this key is not declared, remove it or use a declared key: amount'
+	error.message // 'amount: type; expected number; received "\\"invalid\\""\nextra: extra; this key is not declared, remove it or use a declared key: amount\nsend {"amount": number}'
 }
 const conflict = new ToolError('SCHEMA', 'Choose contract or parameters')
 conflict.code // 'SCHEMA'

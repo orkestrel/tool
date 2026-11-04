@@ -2,6 +2,9 @@ import type { ContractInterface } from '@orkestrel/contract'
 import type { ToolAnnotations, ToolContext, ToolInterface, ToolOptions } from '../types.js'
 import {
 	attempt,
+	admitValue,
+	describeFaults,
+	FAULT_TEXT_LIMIT,
 	createContract,
 	isRecord,
 	isString,
@@ -11,7 +14,7 @@ import {
 } from '@orkestrel/contract'
 import { CLOSED_PARAMETERS, OPEN_PARAMETERS } from '../constants.js'
 import { ToolError } from '../errors.js'
-import { describeFaults, parametersToSchema, scanFaults } from '../helpers.js'
+import { parametersToSchema } from '../helpers.js'
 
 /**
  * Binds an executable tool definition to a handler.
@@ -21,8 +24,8 @@ import { describeFaults, parametersToSchema, scanFaults } from '../helpers.js'
  * before the handler: it reads each top-level argument once, then a parse fault, a repair that
  * fails `matchesLosslessRepair`, an undeclared key
  * of a closed object, a report at `FAULT_LIMIT`, and a union fault each throw a `ToolError` with
- * code `ARGUMENTS`. The handler receives what `parse` returns: a fresh null-prototype record at
- * each declared object, on which `String(args)` and `args.hasOwnProperty()` throw, while an open
+ * code `ARGUMENTS`. The handler receives the admitted value without a second parse. Object parsing makes a fresh null-prototype record at
+ * each declared object, except a guard-valid union may preserve its input identity. On rebuilt objects `String(args)` and `args.hasOwnProperty()` throw, while an open
  * object's undeclared keys and any node the shape leaves raw stay by reference, so `parameters: {}`
  * hands over a plain top-level copy. A contract compiles at construction and derives the advertised
  * parameters. A `parameters` record is advertised verbatim and read once, by the lenient
@@ -113,19 +116,44 @@ export class Tool implements ToolInterface {
 				{ cause: owned.error },
 			)
 		}
-		const faults = scanFaults(contract, owned.value)
-		if (faults.length > 0) {
+		const admitted = admitValue(contract, owned.value)
+		if (!admitted.success) {
+			const { faults } = admitted.error
+			if ('cause' in admitted.error) {
+				throw new ToolError(
+					'ARGUMENTS',
+					'Arguments could not be read; send one JSON object of plain values',
+					{ faults },
+					{ cause: admitted.error.cause },
+				)
+			}
+			if (faults.length === 0) {
+				throw new ToolError(
+					'ARGUMENTS',
+					'Arguments did not parse to a record; send one JSON object holding the declared keys',
+				)
+			}
 			const correction =
-				faults.length === 1 &&
-				faults[0]?.reason === 'type' &&
-				contract.explain(owned.value).length === 0
+				faults.length === 1 && faults[0]?.reason === 'type'
 					? '; send values in their declared types without coercion'
 					: ''
-			throw new ToolError('ARGUMENTS', describeFaults(faults, contract.schema) + correction, {
-				faults,
-			})
+			const guidance =
+				contract.schema.additionalProperties === false &&
+				Object.keys(contract.schema.properties ?? {}).length === 0 &&
+				faults.some((fault) => fault.reason === 'extra' && fault.path.length === 1)
+					? "; this tool declares no arguments; the tool's author must supply contract or parameters, or strict: false"
+					: ''
+			throw new ToolError(
+				'ARGUMENTS',
+				describeFaults(faults, contract.schema, {
+					limit: FAULT_TEXT_LIMIT - correction.length - guidance.length,
+				}) +
+					correction +
+					guidance,
+				{ faults },
+			)
 		}
-		const parsed = contract.parse(owned.value)
+		const parsed = admitted.value.value
 		if (!isRecord(parsed)) {
 			throw new ToolError(
 				'ARGUMENTS',
