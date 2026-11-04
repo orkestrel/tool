@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
 	MALFORMED_CALLS,
 	OPEN_ARGUMENTS,
+	SCHEMA_DEFAULT_CALLS,
 	SCHEMA_VALID_CALLS,
 	createToolCall,
 	createUnreadableSchema,
@@ -50,5 +51,16 @@ describe('call and schema tables', () => {
 	it('titles every schema-valid call once, each with a record to send', () => {
 		expect(new Set(SCHEMA_VALID_CALLS.map(([title]) => title)).size).toBe(SCHEMA_VALID_CALLS.length)
 		expect(SCHEMA_VALID_CALLS.filter(([, , args]) => Object.keys(args).length === 0)).toEqual([])
+	})
+
+	it('titles every default placement once, each schema carrying a default', () => {
+		expect(new Set(SCHEMA_DEFAULT_CALLS.map(([title]) => title)).size).toBe(
+			SCHEMA_DEFAULT_CALLS.length,
+		)
+		expect(
+			SCHEMA_DEFAULT_CALLS.filter(
+				([, parameters]) => !JSON.stringify(parameters).includes('"default"'),
+			),
+		).toEqual([])
 	})
 })

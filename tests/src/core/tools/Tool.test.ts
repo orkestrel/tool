@@ -17,7 +17,12 @@ import {
 import { createRecorder } from '@orkestrel/test'
 import { CLOSED_PARAMETERS, OPEN_PARAMETERS, Tool, ToolError, isToolError } from '@src/core'
 import { describe, expect, expectTypeOf, it } from 'vitest'
-import { OPEN_ARGUMENTS, SCHEMA_VALID_CALLS, createUnreadableSchema } from '../../../setup.js'
+import {
+	OPEN_ARGUMENTS,
+	SCHEMA_DEFAULT_CALLS,
+	SCHEMA_VALID_CALLS,
+	createUnreadableSchema,
+} from '../../../setup.js'
 
 describe('Tool', () => {
 	const context: ToolContext = { signal: new AbortController().signal }
@@ -493,6 +498,33 @@ describe('Tool', () => {
 			expect(tool.execute(args, context)).toEqual(args)
 		})
 	}
+
+	for (const [title, parameters, args] of SCHEMA_DEFAULT_CALLS) {
+		it(`accepts a schema wherever its default sits: ${title}`, () => {
+			const tool = new Tool({ name: 'defaulted', parameters, execute: (received) => received })
+
+			expect(tool.execute(args, context)).toMatchObject(args)
+		})
+	}
+
+	it('fills a schema default under a closed object and leaves it absent under an open one', () => {
+		const properties = { limit: { type: 'number', default: 3 } }
+		const closed = new Tool({
+			name: 'closed',
+			parameters: { type: 'object', properties, additionalProperties: false },
+			execute: (args) => args,
+		})
+		const open = new Tool({
+			name: 'open',
+			parameters: { type: 'object', properties },
+			execute: (args) => args,
+		})
+
+		expect(closed.execute({}, context)).toEqual({ limit: 3 })
+		expect(closed.execute({ limit: 5 }, context)).toEqual({ limit: 5 })
+		expect(open.execute({}, context)).toEqual({})
+		expect(open.execute({ limit: 5 }, context)).toEqual({ limit: 5 })
+	})
 
 	it('compiles a schema on the first execute and only once', () => {
 		const reads = createRecorder<[]>()

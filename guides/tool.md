@@ -391,6 +391,12 @@ Every call passes the door before the handler, in this order:
 The leaf coercions `parse` publishes stay accepted: `'30.0'` reaches the handler as `30`, `'true'`
 as `true`, and a finite number as its string, because a model's argument text is what a tool receives.
 
+A schema `default` never refuses a call, and `parse` fills it only where the lenient conversion carries
+it: a primitive or literal default on an optional key of a closed object with no union ancestor. See
+the `schemaToShape` section of [`contract.md`](contract.md) for that rule. Everywhere else the key stays
+absent, including under a schema that leaves `additionalProperties` out, so a handler must supply its
+own fallback for an absent key unless the schema closes the object.
+
 A refusal throws `ToolError` with code `ARGUMENTS`. The message holds one line per fault: its path
 and reason, then its expected and received values when the fault carries them; a constraint fault
 also names its constraint and limit when present. An `extra` fault says to remove the key. Array paths
@@ -540,7 +546,7 @@ registers here unchanged.
 ## Tests
 
 - [`guides.test.ts`](../tests/guides.test.ts) — the `## Surface` ↔ `src/core` bijection, the `ToolInterface` ↔ `Tool` and `ToolManagerInterface` ↔ `ToolManager` method bijections, and the equality gate: every `Summary` cell against its declaration's description paragraph, the titled `Anatomy of a tool` fence against the `@example` block of that title (pinned so the titled pair cannot be retired silently), and the README pitch against this guide's tagline. It also runs the flagship fences, including `Observe registry changes`, and asserts the values their comments claim against byte-equal transcriptions.
-- [`Tool.test.ts`](../tests/src/core/tools/Tool.test.ts) — definition binding, optional-field omission, name refusal, context identity, the door over contracts, schemas, and undeclared tools, a schema value table the door must never refuse, first-call compilation, the `strict: false` passthrough, error diagnostics, return values, and direct error propagation.
+- [`Tool.test.ts`](../tests/src/core/tools/Tool.test.ts) — definition binding, optional-field omission, name refusal, context identity, the door over contracts, schemas, and undeclared tools, schema value and default-placement tables the door must never refuse, first-call compilation, the `strict: false` passthrough, error diagnostics, return values, and direct error propagation.
 - [`ToolManager.test.ts`](../tests/src/core/tools/ToolManager.test.ts) — insertion order, overwrite and removal lifecycle, definition projection, malformed calls, cancellation, context sharing, and isolated single and batch execution. Event proofs cover registration before `add`, ordered batch additions, the installed replacement during `remove`, `remove` before replacement `add`, synchronous replacement re-entry, a third instance a removal listener installs during a replacement, deletion before `remove`, silent missing names, ordered batch removals, populated and empty `clear` snapshots by identity, emitter destruction after clearing, an empty registry after teardown listeners re-add a tool, sibling delivery during mid-emission destruction, silent additions after destruction, and execution without registry events.
 - [`factories.test.ts`](../tests/src/core/factories.test.ts) — factory construction, working instances, initial registry hooks in publication order, sibling listener isolation, and listener-error forwarding.
 - [`helpers.test.ts`](../tests/src/core/helpers.test.ts) — definition projection: summary preference, omitted optional keys, projected key order, schema identity, title and annotations forwarding, and a fresh object per call; the door's report over parse faults, undeclared keys, unions, and the fault limit; refusal text and its encoding of an untrusted key; and the malformed-call failure.

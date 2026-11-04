@@ -60,6 +60,160 @@ export const MALFORMED_CALLS: ReadonlyArray<
 ])
 
 /**
+ * Lists titled parameter schemas carrying a `default` in each placement, with an argument record
+ * the JSON Schema accepts, because `default` is an annotation and its placement never refuses a call.
+ */
+export const SCHEMA_DEFAULT_CALLS: ReadonlyArray<
+	readonly [
+		title: string,
+		parameters: Readonly<Record<string, unknown>>,
+		args: Readonly<Record<string, unknown>>,
+	]
+> = Object.freeze([
+	['an open object', { type: 'object', properties: { limit: { type: 'number', default: 3 } } }, {}],
+	[
+		'an object declared open',
+		{
+			type: 'object',
+			properties: { limit: { type: 'number', default: 3 } },
+			additionalProperties: true,
+		},
+		{},
+	],
+	[
+		'a closed object',
+		{
+			type: 'object',
+			properties: { limit: { type: 'number', default: 3 } },
+			additionalProperties: false,
+		},
+		{},
+	],
+	[
+		'a required key',
+		{
+			type: 'object',
+			properties: { limit: { type: 'number', default: 3 } },
+			required: ['limit'],
+			additionalProperties: false,
+		},
+		{ limit: 5 },
+	],
+	[
+		'an open object nested in a closed one',
+		{
+			type: 'object',
+			properties: {
+				page: { type: 'object', properties: { limit: { type: 'number', default: 3 } } },
+			},
+			additionalProperties: false,
+		},
+		{ page: {} },
+	],
+	[
+		'an anyOf arm at the root',
+		{
+			anyOf: [
+				{
+					type: 'object',
+					properties: { limit: { type: 'number', default: 3 } },
+					additionalProperties: false,
+				},
+				{ type: 'object', properties: { name: { type: 'string' } }, additionalProperties: false },
+			],
+		},
+		{},
+	],
+	[
+		'a oneOf arm at the root',
+		{
+			oneOf: [
+				{ type: 'object', properties: { limit: { type: 'number', default: 3 } } },
+				{ type: 'object', properties: { name: { type: 'string' } } },
+			],
+		},
+		{ limit: 5 },
+	],
+	[
+		'a nested anyOf arm',
+		{
+			type: 'object',
+			properties: {
+				page: {
+					anyOf: [
+						{ type: 'object', properties: { limit: { type: 'number', default: 3 } } },
+						{ type: 'null' },
+					],
+				},
+			},
+		},
+		{ page: null },
+	],
+	[
+		'array items',
+		{
+			type: 'object',
+			properties: {
+				rows: {
+					type: 'array',
+					items: {
+						type: 'object',
+						properties: { limit: { type: 'number', default: 3 } },
+						additionalProperties: false,
+					},
+				},
+			},
+		},
+		{ rows: [{}] },
+	],
+	[
+		'a null default',
+		{
+			type: 'object',
+			properties: { label: { type: ['string', 'null'], default: null } },
+			additionalProperties: false,
+		},
+		{},
+	],
+	[
+		'a default its own type refuses',
+		{
+			type: 'object',
+			properties: { limit: { type: 'number', default: 'many' } },
+			additionalProperties: false,
+		},
+		{},
+	],
+	[
+		'an object default',
+		{
+			type: 'object',
+			properties: { page: { type: 'object', default: {} } },
+			additionalProperties: false,
+		},
+		{},
+	],
+	[
+		'an array default',
+		{
+			type: 'object',
+			properties: { rows: { type: 'array', items: { type: 'string' }, default: [] } },
+			additionalProperties: false,
+		},
+		{},
+	],
+	[
+		'an enum default',
+		{
+			type: 'object',
+			properties: { unit: { enum: ['c', 'f'], default: 'c' } },
+			additionalProperties: false,
+		},
+		{},
+	],
+])
+
+/**
  * Lists titled parameter schemas with an argument record the JSON Schema accepts, each built on
  * a keyword the lenient conversion must read or widen, so the Tool door never refuses it and hands
  * the handler an equal record.
