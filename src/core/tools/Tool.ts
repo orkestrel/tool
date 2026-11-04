@@ -18,16 +18,20 @@ import { describeFaults, scanFaults } from '../helpers.js'
  *
  * @remarks
  * Advertised fields and execution context are forwarded by reference. Every call runs the door
- * before the handler: a parse fault, an undeclared key of a closed object, a report at
- * `FAULT_LIMIT`, and a union fault each throw a `ToolError` with code `ARGUMENTS`, and `parse`
- * hands the handler an owned copy. A contract compiles at construction and derives the advertised
- * parameters. A `parameters` record is advertised verbatim and compiles through the lenient
- * `schemaToShape` on the first `execute`, where a conversion failure throws code `SCHEMA`. With
- * neither, the tool advertises and enforces {@link CLOSED_PARAMETERS}. `strict: false` skips the
- * door and forwards the arguments' identity. Supplying a contract and parameters, or a `name` that
- * is not a non-empty trimmed string, throws code `SCHEMA`. Caller context is consumer-asserted and
- * is not verified. Handler failures are not caught here; {@link ToolManager} owns per-call error
- * isolation.
+ * before the handler: it reads each top-level argument once, then a parse fault, an undeclared key
+ * of a closed object, a report at `FAULT_LIMIT`, and a union fault each throw a `ToolError` with
+ * code `ARGUMENTS`. The handler receives what `parse` returns: a fresh null-prototype record at
+ * each declared object, on which `String(args)` and `args.hasOwnProperty()` throw, while an open
+ * object's undeclared keys and any node the shape leaves raw stay by reference, so `parameters: {}`
+ * hands over a plain top-level copy. A contract compiles at construction and derives the advertised
+ * parameters. A `parameters` record is advertised verbatim and read once, by the lenient
+ * `schemaToShape` on the first `execute`, where a conversion failure throws code `SCHEMA`; mutating
+ * it later leaves the door behind what the tool advertises. With neither, the tool advertises and
+ * enforces {@link CLOSED_PARAMETERS}. `strict: false` skips the door and forwards the arguments'
+ * identity. Supplying a contract and parameters, `parameters` that is not a plain record, or a
+ * `name` that is not a non-empty trimmed string throws code `SCHEMA`. Caller context is
+ * consumer-asserted and is not verified. Handler failures are not caught here; {@link ToolManager}
+ * owns per-call error isolation.
  *
  * @example
  * ```ts
@@ -79,8 +83,16 @@ export class Tool implements ToolInterface {
 			if (this.#strict) this.#contract = contract
 			const parameters = schemaToParameters(contract.schema)
 			if (parameters !== undefined) this.parameters = parameters
-		} else if (options.parameters !== undefined) this.parameters = options.parameters
-		else this.parameters = this.#strict ? CLOSED_PARAMETERS : OPEN_PARAMETERS
+		} else if (options.parameters !== undefined) {
+			const parameters: unknown = options.parameters
+			if (!isRecord(parameters)) {
+				throw new ToolError(
+					'SCHEMA',
+					`Tool ${preview(options.name)} needs parameters that are a plain JSON Schema record; received ${preview(parameters)}; pass an object such as { type: 'object', properties: {} }, or leave parameters out`,
+				)
+			}
+			this.parameters = parameters
+		} else this.parameters = this.#strict ? CLOSED_PARAMETERS : OPEN_PARAMETERS
 		this.#execute = options.execute
 	}
 
@@ -90,9 +102,20 @@ export class Tool implements ToolInterface {
 	): Promise<unknown> | unknown {
 		if (!this.#strict) return this.#execute(args, context)
 		const contract = this.#compile()
-		const faults = scanFaults(contract, args)
-		if (faults.length > 0) throw new ToolError('ARGUMENTS', describeFaults(faults), { faults })
-		const parsed = contract.parse(args)
+		const owned = attempt(() => (isRecord(args) ? { ...args } : args))
+		if (!owned.success) {
+			throw new ToolError(
+				'ARGUMENTS',
+				'Arguments could not be read; send one JSON object of plain values',
+				undefined,
+				{ cause: owned.error },
+			)
+		}
+		const faults = scanFaults(contract, owned.value)
+		if (faults.length > 0) {
+			throw new ToolError('ARGUMENTS', describeFaults(faults, contract.schema), { faults })
+		}
+		const parsed = contract.parse(owned.value)
 		if (!isRecord(parsed)) {
 			throw new ToolError(
 				'ARGUMENTS',

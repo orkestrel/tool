@@ -645,7 +645,7 @@ describe('ToolManager execution', () => {
 			name: 'amount',
 			success: false,
 			error:
-				'amount: type; expected number; received "invalid"\nextra: extra; this key is not declared, remove it',
+				'amount: type; expected number; received "invalid"\nextra: extra; this key is not declared, remove it or use a declared key: amount',
 		})
 	})
 
@@ -659,6 +659,47 @@ describe('ToolManager execution', () => {
 			name: 'bare',
 			success: false,
 			error: 'x: extra; this key is not declared, remove it',
+		})
+		expect(entered.count).toBe(0)
+	})
+
+	it('reads the call once and hands the handler that read', async () => {
+		const reads = createRecorder<[]>()
+		const received = createRecorder<[Readonly<Record<string, unknown>>, ToolContext]>()
+		const manager = new ToolManager()
+		manager.add(new Tool({ name: 'raw', strict: false, execute: received.handler }))
+		const first = { from: 'the first read' }
+		const call = Object.defineProperty({ id: 'once', name: 'raw' }, 'arguments', {
+			enumerable: true,
+			get: () => {
+				reads.handler()
+				return reads.count === 1 ? first : undefined
+			},
+		})
+
+		await Reflect.apply(manager.execute, manager, [call])
+
+		expect(reads.count).toBe(1)
+		expect(received.calls[0]?.[0]).toBe(first)
+	})
+
+	it('answers a throwing arguments accessor as a malformed call it can correlate', async () => {
+		const entered = createRecorder<[]>()
+		const manager = new ToolManager()
+		manager.add(new Tool({ name: 'raw', strict: false, execute: entered.handler }))
+		const call = Object.defineProperty({ id: 'blocked', name: 'raw' }, 'arguments', {
+			enumerable: true,
+			get: () => {
+				throw new Error('blocked read')
+			},
+		})
+
+		await expect(Reflect.apply(manager.execute, manager, [call])).resolves.toEqual({
+			id: 'blocked',
+			name: 'raw',
+			success: false,
+			error:
+				'malformed call: a call needs a string id, a string name, and a plain record of arguments',
 		})
 		expect(entered.count).toBe(0)
 	})

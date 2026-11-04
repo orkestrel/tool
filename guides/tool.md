@@ -69,12 +69,16 @@ and an `error` handler for listener throws.
 
 ### Constants
 
-The schemas a tool advertises when it declares none, from [`constants.ts`](../src/core/constants.ts).
+The schemas a tool advertises when it declares none, and the bounds of a refusal, from
+[`constants.ts`](../src/core/constants.ts).
 
-| Name                | Kind  | Signature                           | Summary                                                                                       |
-| ------------------- | ----- | ----------------------------------- | --------------------------------------------------------------------------------------------- |
-| `CLOSED_PARAMETERS` | const | `Readonly<Record<string, unknown>>` | Holds the schema a tool that declares nothing advertises and enforces: a closed empty object. |
-| `OPEN_PARAMETERS`   | const | `Readonly<Record<string, unknown>>` | Holds the schema a raw tool that declares nothing advertises: an open object.                 |
+| Name                   | Kind  | Signature                           | Summary                                                                                       |
+| ---------------------- | ----- | ----------------------------------- | --------------------------------------------------------------------------------------------- |
+| `CLOSED_PARAMETERS`    | const | `Readonly<Record<string, unknown>>` | Holds the schema a tool that declares nothing advertises and enforces: a closed empty object. |
+| `OPEN_PARAMETERS`      | const | `Readonly<Record<string, unknown>>` | Holds the schema a raw tool that declares nothing advertises: an open object.                 |
+| `REFUSAL_TEXT_LIMIT`   | const | `2048`                              | Caps at `2048` the characters of a refusal message, about 2 KB.                               |
+| `REFUSAL_LIST_LIMIT`   | const | `12`                                | Caps at `12` the declared keys or literal candidates one refusal line names.                  |
+| `REFUSAL_SCHEMA_LIMIT` | const | `160`                               | Caps at `160` the characters of the sub-schema a union refusal line quotes.                   |
 
 ### Validators
 
@@ -86,14 +90,21 @@ The call-envelope guard, from [`validators.ts`](../src/core/validators.ts).
 
 ### Helpers
 
-The advertised-definition projection and the door's report, from [`helpers.ts`](../src/core/helpers.ts).
+The advertised-definition projection, the door's report and its text, and the read of a call, from
+[`helpers.ts`](../src/core/helpers.ts).
 
-| Name               | Kind     | Signature                                                                         | Summary                                                                                                                                                                                        |
-| ------------------ | -------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `toolToDefinition` | function | `(tool: ToolInterface) => ToolDefinition`                                         | Projects a tool onto the plain definition advertised to a caller, advertising an authored `summary` in place of the full description and carrying `parameters` and `annotations` by reference. |
-| `scanFaults`       | function | `(contract: ContractInterface<unknown>, value: unknown) => readonly AuditFault[]` | Walks an argument record through a contract's reports and returns the faults the Tool door refuses, empty when the record may proceed to `parse`.                                              |
-| `describeFaults`   | function | `(faults: readonly AuditFault[]) => string`                                       | Describes a fault report as text a caller corrects from, one fault per line.                                                                                                                   |
-| `buildCallRefusal` | function | `(call: unknown) => ToolFailure`                                                  | Builds the failure a registry answers with for a value that is not a `ToolCall`, carrying each of its `id` and `name` that is a string and leaving the other empty.                            |
+| Name                | Kind     | Signature                                                                         | Summary                                                                                                                                                                                        |
+| ------------------- | -------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `toolToDefinition`  | function | `(tool: ToolInterface) => ToolDefinition`                                         | Projects a tool onto the plain definition advertised to a caller, advertising an authored `summary` in place of the full description and carrying `parameters` and `annotations` by reference. |
+| `scanFaults`        | function | `(contract: ContractInterface<unknown>, value: unknown) => readonly AuditFault[]` | Walks an argument record through a contract's reports and returns the faults the Tool door refuses, empty when the record may proceed to `parse`.                                              |
+| `extractPath`       | function | `(fault: AuditFault) => readonly string[]`                                        | Extracts a fault's path as its segments, reading a string path as one segment.                                                                                                                 |
+| `extractSchema`     | function | `(schema: JSONSchema, path: readonly string[]) => JSONSchema \| undefined`        | Extracts the part of a schema a path reaches, through properties, array items, record values, and the arms of a union.                                                                         |
+| `renderPath`        | function | `(path: readonly string[]) => string`                                             | Renders a path as text, encoding what a caller could have sent and eliding the middle of a long one.                                                                                           |
+| `renderList`        | function | `(entries: readonly string[]) => string`                                          | Renders a list as text, naming at most `REFUSAL_LIST_LIMIT` of its entries and counting the rest.                                                                                              |
+| `describeFaultLine` | function | `(fault: AuditFault, schema: JSONSchema) => string`                               | Describes one fault as the line a caller corrects from, naming what to send where the schema says.                                                                                             |
+| `readCall`          | function | `(call: unknown) => Readonly<Record<string, unknown>>`                            | Reads a call's `id`, `name`, and `arguments` once into a plain record, so a guard and every later step see the same values.                                                                    |
+| `describeFaults`    | function | `(faults: readonly AuditFault[], schema: JSONSchema) => string`                   | Describes a fault report as text a caller corrects from, one fault per line, at most `REFUSAL_TEXT_LIMIT` characters in all.                                                                   |
+| `buildCallRefusal`  | function | `(call: unknown) => ToolFailure`                                                  | Builds the failure a registry answers with for a value that is not a `ToolCall`, carrying each of its `id` and `name` that is a string and leaving the other empty.                            |
 
 ### Factories
 
@@ -125,7 +136,7 @@ the handler in a private field, so a tool's advertised shape cannot drift from w
 An explicit parameter schema and the execution context are forwarded by reference. A contract
 compiles at construction and derives the parameter schema through the contract package's
 projection; a `parameters` record compiles on the first `execute`. Either way the door checks
-arguments before handler entry and supplies its parsed copy to the handler. Under `strict: false`
+arguments before handler entry and supplies what `parse` returns to the handler. Under `strict: false`
 the argument record retains its identity. `name` must be a non-empty trimmed string, or the
 constructor throws code `SCHEMA`.
 `Tool` deliberately does not catch: a handler that throws throws, and per-call isolation belongs
@@ -218,7 +229,8 @@ declaring `required` tells the caller what to send, and the door refuses a call 
 arguments: it advertises and enforces `CLOSED_PARAMETERS`.
 
 A handler receives a `Readonly<Record<string, unknown>>` and a required `ToolContext`.
-The record is the parsed value, or the original input under `strict: false`.
+The record is what `parse` returns, or the original input under `strict: false`; see
+[Contract validation and errors](#contract-validation-and-errors) for what that means for a handler.
 The context holds an `AbortSignal` and optional unverified caller identity. Handlers may omit
 unused parameters from their declaration. Every invocation still supplies the arguments and the
 context. A direct `tool.execute(args, context)` call must provide the context; the manager creates
@@ -301,8 +313,9 @@ const batch = await tools.execute([
 
 `isToolCall` validates the envelope only: the `id`, the `name`, and that `arguments` is a plain
 record. The guard ignores extra fields without reading them. A call carries no execution context.
-The registry applies the same guard to every call it receives, and the registered tool's door
-validates the arguments during execution.
+The registry reads a call's `id`, `name`, and `arguments` once, applies the same guard to that read,
+and hands the registered tool's door what it read, so an accessor cannot show the guard one value and
+the handler another. The door validates the arguments during execution.
 
 Execution context travels as a separate argument. This package adds neither the signal nor caller
 identity to definitions, schemas, calls, or results. A handler can explicitly return a context
@@ -311,7 +324,8 @@ member as its own value. The context and caller identity reach the handler uncha
 Execution always resolves for a call whose members are plain values; a call whose `id` or `name`
 accessor throws when read makes `execute` reject, because no correlated result can be built
 without them. A value failing `isToolCall` becomes a failure reading `malformed call` before any
-tool is reached, its `id` and `name` empty where it held no string for them. An unknown name becomes
+tool is reached, its `id` and `name` empty where it held no string for them; a throwing `arguments`
+accessor reads as absent, so it lands here too. An unknown name becomes
 `tool not found: <name>`; a synchronous throw and an asynchronous rejection are both contained; an `Error` contributes its `message`, and any other
 thrown value is converted with `String`; a value whose conversion itself throws — a hostile
 `toString`, a throwing `message` getter, a null-prototype object — becomes the fixed message
@@ -369,24 +383,40 @@ that handler and contains its throws as usual; an abort does not force a running
 
 A contract compiles at construction. Its schema projects to `parameters` through
 `schemaToParameters(createContract(shape).schema)` from `@orkestrel/contract`. Construction errors
-from the dependency propagate unchanged, so an owned declaration fails early. A `parameters` record is advertised verbatim and compiles through
-the lenient `schemaToShape` on the first `execute`, memoized on the instance, so building many
-tools compiles nothing until a call. That conversion widens every keyword it cannot express, so the
-door refuses a subset of what the schema itself refuses and never more. A conversion failure, which
-only a schema that cannot be read produces, throws `ToolError` with code `SCHEMA` from `execute`,
-with the failure as its `cause`; a JSON-parsed schema never throws. Supplying `contract` and
-`parameters` together throws code `SCHEMA` at construction.
+from the dependency propagate unchanged, so an owned declaration fails early. A `parameters` record
+is advertised verbatim and compiles through the lenient `schemaToShape` on the first `execute`,
+memoized on the instance, so building many tools compiles nothing until a call. That is the one read
+of the record: mutating it after the first call leaves the door behind what `definitions()`
+advertises, so treat it as frozen. The conversion widens every keyword it cannot express, so the door
+refuses a subset of what the schema itself refuses and never more. A conversion failure, which only a
+schema that cannot be read produces, throws `ToolError` with code `SCHEMA` from `execute`, with the
+failure as its `cause`; a JSON-parsed schema never throws. `parameters` that is not a plain record,
+and `contract` and `parameters` together, throw code `SCHEMA` at construction.
 
 Every call passes the door before the handler, in this order:
 
-1. A fault from `explain` refuses.
-2. An `extra` fault from `audit` refuses. A shape declared open with
+1. Each top-level argument is read once into a copy, and a read that throws refuses. Every later step
+   reads that copy.
+2. A value `is` accepts goes straight to `parse`, because `audit` is empty if and only if `is` holds.
+3. A fault from `explain` refuses.
+4. An `extra` fault from `audit` refuses. A shape declared open with
    `objectShape(properties, { additionalProperties: true })`, or a schema whose `additionalProperties`
    is absent or `true`, is the one way to admit an undeclared key.
-3. An `audit` report at `FAULT_LIMIT` refuses, because its cap can hide an undeclared key.
-4. A `variant` or `oneOf` fault from `audit` refuses, because a union parses by declaration order, so
+5. An `audit` report at `FAULT_LIMIT` refuses, because its cap can hide an undeclared key.
+6. A `variant` or `oneOf` fault from `audit` refuses, because a union parses by declaration order, so
    a coercion through one is not a repair.
-5. `contract.parse(args)` hands the handler an owned copy in the schema's types.
+7. `contract.parse` gives the handler its arguments.
+
+A nested accessor is still read by both `is` and `parse`. A value that changes between them cannot
+reach the handler invalid, because every defined `parse` result satisfies `is`, and one that stops
+parsing refuses.
+
+The handler receives what `parse` returns. That is a fresh null-prototype record at each declared
+object, so read its keys directly, with `Object.keys`, or with `in`: `String(args)` and
+`args.hasOwnProperty()` throw on it. An open object's undeclared keys and any node the shape leaves
+raw stay by reference. So `{ type: 'object' }` gives a null-prototype copy of the top level with nested
+values by reference, and `parameters: {}` or a root `$ref` gives a plain top-level copy with nested
+values by reference.
 
 The leaf coercions `parse` publishes stay accepted: `'30.0'` reaches the handler as `30`, `'true'`
 as `true`, and a finite number as its string, because a model's argument text is what a tool receives.
@@ -399,12 +429,26 @@ own fallback for an absent key unless the schema closes the object.
 
 A refusal throws `ToolError` with code `ARGUMENTS`. The message holds one line per fault: its path
 and reason, then its expected and received values when the fault carries them; a constraint fault
-also names its constraint and limit when present. An `extra` fault says to remove the key. Array paths
-join with `.`. A segment that is not a plain identifier is JSON-encoded and length-capped, because a
-key the caller sent is untrusted text. A root array path is empty, so its line starts with `: `. A
-`variant` fault appends `; variants <n>`, and a `oneOf` fault appends `; matched <n>`. A missing field
-carries expected alone. The error's `context.faults` holds the same report, at most `FAULT_LIMIT`
-entries, and a report at that limit closes with a line saying that it stops there. If parsing returns
+also names its constraint and limit when present. A missing field carries expected alone. Each line
+says what to send where the schema says so:
+
+- An `extra` line lists the keys declared at that path, at most `REFUSAL_LIST_LIMIT` of them.
+- A line on a literal names its candidates, at most `REFUSAL_LIST_LIMIT` of them.
+- A `variant` or `oneOf` line says that the value matches none of the declared forms, or several where
+  exactly one must match, and that it must be sent exactly as the schema declares. It quotes the schema
+  at that path when that fits in `REFUSAL_SCHEMA_LIMIT` characters.
+
+Where a `variant` or `oneOf` fault covers a path, every fault under that path is left out, because
+those come from the walk of one arm and can call a key undeclared that another arm declares.
+
+Array paths join with `.`. A segment that is not a plain identifier is JSON-encoded and length-capped,
+because a key the caller sent is untrusted text. A path of more than four segments past 120 characters
+keeps its first segment and its last three. A root array path is empty, so its line starts with `: `.
+
+The whole message stays within `REFUSAL_TEXT_LIMIT` characters, because it goes back to a model whose
+context window can be 2048 tokens and an over-window request refuses. It closes by saying how many more
+faults there are, and a report at `FAULT_LIMIT` also says that it stops there. The error's
+`context.faults` holds every fault up to `FAULT_LIMIT`, whatever the message shows. If parsing returns
 a value that isn't a record after a clean report, execution throws code `ARGUMENTS`, without `context`,
 before handler entry.
 
@@ -435,7 +479,7 @@ try {
 	code // 'ARGUMENTS'
 	const details: ToolErrorContext | undefined = error.context
 	details?.faults?.[1]?.reason // 'extra'
-	error.message // 'amount: type; expected number; received "invalid"\nextra: extra; this key is not declared, remove it'
+	error.message // 'amount: type; expected number; received "invalid"\nextra: extra; this key is not declared, remove it or use a declared key: amount'
 }
 const conflict = new ToolError('SCHEMA', 'Choose contract or parameters')
 conflict.code // 'SCHEMA'
@@ -546,10 +590,10 @@ registers here unchanged.
 ## Tests
 
 - [`guides.test.ts`](../tests/guides.test.ts) — the `## Surface` ↔ `src/core` bijection, the `ToolInterface` ↔ `Tool` and `ToolManagerInterface` ↔ `ToolManager` method bijections, and the equality gate: every `Summary` cell against its declaration's description paragraph, the titled `Anatomy of a tool` fence against the `@example` block of that title (pinned so the titled pair cannot be retired silently), and the README pitch against this guide's tagline. It also runs the flagship fences, including `Observe registry changes`, and asserts the values their comments claim against byte-equal transcriptions.
-- [`Tool.test.ts`](../tests/src/core/tools/Tool.test.ts) — definition binding, optional-field omission, name refusal, context identity, the door over contracts, schemas, and undeclared tools, schema value and default-placement tables the door must never refuse, first-call compilation, the `strict: false` passthrough, error diagnostics, return values, and direct error propagation.
+- [`Tool.test.ts`](../tests/src/core/tools/Tool.test.ts) — definition binding, optional-field omission, name and `parameters` refusal, context identity, the door over contracts, schemas, and undeclared tools, schema value and default-placement tables the door must never refuse, first-call compilation and the one read of a schema, the one read of each top-level argument, what a handler receives at each kind of node, the refusal text and its bound, the `strict: false` passthrough, error diagnostics, return values, and direct error propagation.
 - [`ToolManager.test.ts`](../tests/src/core/tools/ToolManager.test.ts) — insertion order, overwrite and removal lifecycle, definition projection, malformed calls, cancellation, context sharing, and isolated single and batch execution. Event proofs cover registration before `add`, ordered batch additions, the installed replacement during `remove`, `remove` before replacement `add`, synchronous replacement re-entry, a third instance a removal listener installs during a replacement, deletion before `remove`, silent missing names, ordered batch removals, populated and empty `clear` snapshots by identity, emitter destruction after clearing, an empty registry after teardown listeners re-add a tool, sibling delivery during mid-emission destruction, silent additions after destruction, and execution without registry events.
 - [`factories.test.ts`](../tests/src/core/factories.test.ts) — factory construction, working instances, initial registry hooks in publication order, sibling listener isolation, and listener-error forwarding.
-- [`helpers.test.ts`](../tests/src/core/helpers.test.ts) — definition projection: summary preference, omitted optional keys, projected key order, schema identity, title and annotations forwarding, and a fresh object per call; the door's report over parse faults, undeclared keys, unions, and the fault limit; refusal text and its encoding of an untrusted key; and the malformed-call failure.
+- [`helpers.test.ts`](../tests/src/core/helpers.test.ts) — definition projection: summary preference, omitted optional keys, projected key order, schema identity, title and annotations forwarding, and a fresh object per call; the door's report over parse faults, undeclared keys, unions, faults a union covers, the guard's fast path, and the fault limit; the walk of a path through a schema; the rendered path and list; each refusal line and the bound on the whole text; the read of a call; and the malformed-call failure.
 - [`validators.test.ts`](../tests/src/core/validators.test.ts) — tool-call envelope boundaries: incomplete calls, wrong field types, and non-record arguments.
 - [`errors.test.ts`](../tests/src/core/errors.test.ts) — `isToolError` recognition, an `extra` fault in a report, the `cause` option, unrelated-value rejection, and hostile prototype containment.
 

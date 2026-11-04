@@ -122,10 +122,14 @@ export interface ToolInterface extends ToolDefinition {
 	 * @remarks
 	 * Failures are not contained here: a synchronous throw propagates and an
 	 * asynchronous rejection rejects. {@link ToolManagerInterface.execute} is where a
-	 * call becomes a result. The door refuses a parse fault, an undeclared key of a closed
-	 * object, a report at `FAULT_LIMIT`, and a union fault before the handler runs, then
-	 * forwards `contract.parse(args)`, an owned copy in the schema's types. Under
-	 * `strict: false` nothing is checked and the raw record is forwarded unchanged.
+	 * call becomes a result. The door reads each top-level argument once, refuses a parse
+	 * fault, an undeclared key of a closed object, a report at `FAULT_LIMIT`, and a union
+	 * fault before the handler runs, then forwards what `contract.parse` returns. That is a
+	 * fresh null-prototype record at each declared object, so `String(args)` and
+	 * `args.hasOwnProperty()` throw on it; an open object's undeclared keys and any node the
+	 * shape leaves raw stay by reference, so `{ type: 'object' }` copies the top level only and
+	 * `parameters: {}` or a root `$ref` hands over a plain top-level copy. Under `strict: false`
+	 * nothing is checked and the raw record is forwarded unchanged.
 	 * Caller identity is forwarded without verification.
 	 * The second parameter is the execution context; caller identity is `context.caller`.
 	 * `Tool.execute` refuses nothing on an aborted signal; the manager checks the signal
@@ -148,10 +152,11 @@ export interface ToolInterface extends ToolDefinition {
  * to a caller, `summary` optionally replaces the advertised description, and `execute`
  * handles the caller-supplied arguments record and execution context. `contract` compiles
  * at construction and derives the advertised parameters; `parameters` is advertised
- * verbatim and compiles through the lenient `schemaToShape` on the first `execute`. With
- * neither, the tool advertises and enforces `CLOSED_PARAMETERS`. Supplying `parameters`
- * alongside `contract` throws a `ToolError` with code `SCHEMA`, as does a `name` that is
- * not a non-empty trimmed string.
+ * verbatim and read once, by the lenient `schemaToShape` on the first `execute`, so mutating
+ * the record after that call leaves the door behind what the tool advertises. With neither,
+ * the tool advertises and enforces `CLOSED_PARAMETERS`. Supplying `parameters` alongside
+ * `contract` throws a `ToolError` with code `SCHEMA`, as do `parameters` that is not a plain
+ * record and a `name` that is not a non-empty trimmed string.
  *
  * `strict` mirrors the switch `@orkestrel/agent` and `@orkestrel/ndjson` name the same way. If
  * `true`, `execute` runs the door on every call; if `false`, nothing is compiled for arguments
@@ -167,7 +172,7 @@ export interface ToolOptions {
 	readonly description?: string
 	/** Holds a concise description to advertise in place of the full description. */
 	readonly summary?: string
-	/** Holds the JSON Schema for the tool's arguments, advertised verbatim and enforced leniently. */
+	/** Holds the JSON Schema record for the tool's arguments, advertised verbatim, read once, and enforced leniently. */
 	readonly parameters?: Readonly<Record<string, unknown>>
 	/** Derives parameters and validates arguments before execution. */
 	readonly contract?: ContractShape

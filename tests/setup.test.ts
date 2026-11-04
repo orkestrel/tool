@@ -2,9 +2,13 @@ import { createContract } from '@orkestrel/contract'
 import { describe, expect, it } from 'vitest'
 import {
 	MALFORMED_CALLS,
+	NON_RECORD_PARAMETERS,
 	OPEN_ARGUMENTS,
+	PET_PARAMETERS,
 	SCHEMA_DEFAULT_CALLS,
 	SCHEMA_VALID_CALLS,
+	createChainArguments,
+	createChainSchema,
 	createToolCall,
 	createUnreadableSchema,
 } from './setup.js'
@@ -34,6 +38,28 @@ describe('createUnreadableSchema', () => {
 	})
 })
 
+describe('createChainSchema and createChainArguments', () => {
+	it('nest the same depth, so the chain schema reads the chain record', () => {
+		expect(createChainSchema(1)).toEqual({
+			type: 'object',
+			properties: {
+				child: { type: 'object', properties: {}, additionalProperties: false },
+			},
+			additionalProperties: false,
+		})
+		expect(createChainArguments(1, ['a', 'b'])).toEqual({ child: { a: 1, b: 1 } })
+	})
+})
+
+describe('PET_PARAMETERS', () => {
+	it('declares each key in one arm alone', () => {
+		const { pet } = { pet: JSON.stringify(PET_PARAMETERS) }
+
+		expect(pet.match(/"x":/gu)).toHaveLength(1)
+		expect(pet.match(/"y":/gu)).toHaveLength(1)
+	})
+})
+
 describe('OPEN_ARGUMENTS', () => {
 	it('admits arbitrary keys strictly and keeps them through parse', () => {
 		const contract = createContract(OPEN_ARGUMENTS)
@@ -44,6 +70,12 @@ describe('OPEN_ARGUMENTS', () => {
 })
 
 describe('call and schema tables', () => {
+	it('titles every non-record parameter value once', () => {
+		expect(new Set(NON_RECORD_PARAMETERS.map(([title]) => title)).size).toBe(
+			NON_RECORD_PARAMETERS.length,
+		)
+	})
+
 	it('titles every malformed call once', () => {
 		expect(new Set(MALFORMED_CALLS.map(([title]) => title)).size).toBe(MALFORMED_CALLS.length)
 	})

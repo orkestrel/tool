@@ -11,7 +11,7 @@ import type {
 } from '../types.js'
 import { attempt, isArray, isError } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
-import { buildCallRefusal, toolToDefinition } from '../helpers.js'
+import { buildCallRefusal, readCall, toolToDefinition } from '../helpers.js'
 import { isToolCall } from '../validators.js'
 
 /**
@@ -20,11 +20,11 @@ import { isToolCall } from '../validators.js'
  * @remarks
  * A repeated name overwrites the registered tool without changing its insertion
  * position. Definitions advertise `summary` in place of `description` when present.
- * A value failing {@link isToolCall}, an unknown name, and a handler throw resolve to error
- * results; a call whose `id` or `name` accessor throws when read makes its call, and the
- * batch holding it, reject. Batch
- * execution preserves input order and isolates each call whose members are plain
- * values. Execution context is shared across a batch and forwarded unchanged. An
+ * Each call's `id`, `name`, and `arguments` are read once, and that read is what the guard
+ * checks and the tool receives. A value failing {@link isToolCall}, an unknown name, and a
+ * handler throw resolve to error results; a call whose `id` or `name` accessor throws when
+ * read makes its call, and the batch holding it, reject. Batch execution preserves input
+ * order and isolates each call whose members are plain values. Execution context is shared across a batch and forwarded unchanged. An
  * omitted context receives a non-aborted signal. A signal aborted before handler
  * entry produces an error result; later cancellation is the handler's responsibility.
  * Registry changes publish synchronously. Replacements publish `remove`, then `add`
@@ -132,7 +132,8 @@ export class ToolManager implements ToolManagerInterface {
 		for (const name of names) yield this.remove(name)
 	}
 
-	async #run(call: ToolCall, context: ToolContext): Promise<ToolResult> {
+	async #run(received: ToolCall, context: ToolContext): Promise<ToolResult> {
+		const call = readCall(received)
 		if (!isToolCall(call)) return buildCallRefusal(call)
 		const tool = this.#tools.get(call.name)
 		if (tool === undefined) {

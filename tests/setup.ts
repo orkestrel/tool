@@ -38,8 +38,77 @@ export function createUnreadableSchema(): Readonly<Record<string, unknown>> {
 	})
 }
 
+/**
+ * Creates a chain of closed objects, each holding one `child` key down to `depth`.
+ *
+ * @param depth - The objects the chain holds below its root
+ * @returns The schema of the chain's root
+ */
+export function createChainSchema(depth: number): Readonly<Record<string, unknown>> {
+	return Array.from({ length: depth }).reduce<Readonly<Record<string, unknown>>>(
+		(inner) => ({ type: 'object', properties: { child: inner }, additionalProperties: false }),
+		{ type: 'object', properties: {}, additionalProperties: false },
+	)
+}
+
+/**
+ * Creates the record the chain schema reads, holding `keys` at the object `depth` levels down.
+ *
+ * @param depth - The objects to descend through
+ * @param keys - The keys of the deepest object, each holding the number `1`
+ * @returns The chain's root record
+ */
+export function createChainArguments(
+	depth: number,
+	keys: readonly string[],
+): Readonly<Record<string, unknown>> {
+	return Array.from({ length: depth }).reduce<Readonly<Record<string, unknown>>>(
+		(inner) => ({ child: inner }),
+		Object.fromEntries(keys.map((key) => [key, 1])),
+	)
+}
+
 /** Holds the open object shape a fixture declares when its handler reads arbitrary keys. */
 export const OPEN_ARGUMENTS = objectShape({}, { additionalProperties: true })
+
+/**
+ * Holds a schema whose closed union arms share a `kind` the lenient conversion cannot read, so the
+ * walk of the closest arm can call a key undeclared that the other arm declares.
+ */
+export const PET_PARAMETERS: Readonly<Record<string, unknown>> = Object.freeze({
+	type: 'object',
+	properties: {
+		pet: {
+			anyOf: [
+				{
+					type: 'object',
+					properties: { kind: { const: 'a' }, x: { type: 'number' } },
+					required: ['kind'],
+					additionalProperties: false,
+				},
+				{
+					type: 'object',
+					properties: { kind: { const: 'b' }, y: { type: 'number' } },
+					required: ['kind'],
+					additionalProperties: false,
+				},
+			],
+		},
+	},
+})
+
+/** Lists titled values a `parameters` option holds that are not a plain record. */
+export const NON_RECORD_PARAMETERS: ReadonlyArray<readonly [title: string, parameters: unknown]> =
+	Object.freeze([
+		['a string', 'x'],
+		['a number', 5],
+		['true', true],
+		['false', false],
+		['an array', []],
+		['null', null],
+		['a map', new Map()],
+		['a date', new Date(0)],
+	])
 
 /**
  * Lists titled values `ToolManager.execute` receives that are not a `ToolCall`, each with the

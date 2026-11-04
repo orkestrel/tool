@@ -15,12 +15,23 @@ import {
 	oneOfShape,
 } from '@orkestrel/contract'
 import { createRecorder } from '@orkestrel/test'
-import { CLOSED_PARAMETERS, OPEN_PARAMETERS, Tool, ToolError, isToolError } from '@src/core'
+import {
+	CLOSED_PARAMETERS,
+	OPEN_PARAMETERS,
+	REFUSAL_TEXT_LIMIT,
+	Tool,
+	ToolError,
+	isToolError,
+} from '@src/core'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import {
+	NON_RECORD_PARAMETERS,
 	OPEN_ARGUMENTS,
+	PET_PARAMETERS,
 	SCHEMA_DEFAULT_CALLS,
 	SCHEMA_VALID_CALLS,
+	createChainArguments,
+	createChainSchema,
 	createUnreadableSchema,
 } from '../../../setup.js'
 
@@ -242,12 +253,12 @@ describe('Tool', () => {
 		expect(isToolError(unmatched.error)).toBe(true)
 		if (!isToolError(unmatched.error)) throw new Error('Expected a tool error')
 		expect(unmatched.error.code).toBe('ARGUMENTS')
-		expect(unmatched.error.message.split('\n')[0]).toBe('amount: variant; variants 2')
-		expect(unmatched.error.context?.faults?.[0]).toEqual({
-			reason: 'variant',
-			path: ['amount'],
-			variants: 2,
-		})
+		expect(unmatched.error.message).toBe(
+			'amount: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares: {"anyOf":[{"type":"number"},{"type":"string","minLength":3}]}',
+		)
+		expect(unmatched.error.context?.faults).toEqual([
+			{ reason: 'variant', path: ['amount'], variants: 2 },
+		])
 		expect(recorder.count).toBe(0)
 
 		const overlapping = attempt(() => exclusive.execute({}, context))
@@ -256,7 +267,9 @@ describe('Tool', () => {
 		expect(isToolError(overlapping.error)).toBe(true)
 		if (!isToolError(overlapping.error)) throw new Error('Expected a tool error')
 		expect(overlapping.error.code).toBe('ARGUMENTS')
-		expect(overlapping.error.message).toBe(': oneOf; matched 2')
+		expect(overlapping.error.message).toMatch(
+			/^: oneOf; the value matches 2 of the 2 declared forms and must match exactly one; send it exactly as the schema declares/u,
+		)
 		expect(recorder.count).toBe(0)
 	})
 
@@ -273,7 +286,9 @@ describe('Tool', () => {
 		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
 		expect(result.error.code).toBe('ARGUMENTS')
 		expect(result.error.context?.faults).toEqual([{ reason: 'extra', path: ['extra'] }])
-		expect(result.error.message).toBe('extra: extra; this key is not declared, remove it')
+		expect(result.error.message).toBe(
+			'extra: extra; this key is not declared, remove it or use a declared key: amount',
+		)
 		expect(recorder.count).toBe(0)
 	})
 
@@ -305,7 +320,7 @@ describe('Tool', () => {
 		expect(result.error.message.split('\n')).toEqual([
 			'amount: type; expected number; received "invalid"',
 			'label: missing; expected string',
-			'extra: extra; this key is not declared, remove it',
+			'extra: extra; this key is not declared, remove it or use a declared key: amount, label',
 		])
 		expect(result.error.context?.faults).toHaveLength(3)
 	})
@@ -336,8 +351,12 @@ describe('Tool', () => {
 		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
 		expect(result.error.code).toBe('ARGUMENTS')
 		expect(result.error.context?.faults).toHaveLength(FAULT_LIMIT)
-		expect(result.error.message.split('\n').at(-1)).toBe(
-			`the report stops at ${String(FAULT_LIMIT)} faults; correct these and call again`,
+		expect(result.error.message.length).toBeLessThanOrEqual(REFUSAL_TEXT_LIMIT)
+		expect(result.error.message.split('\n').at(-1)).toMatch(
+			new RegExp(
+				`^and \\d+ more faults, the report stops at ${String(FAULT_LIMIT)}; correct these and call again$`,
+				'u',
+			),
 		)
 		expect(recorder.count).toBe(0)
 	})
@@ -358,8 +377,56 @@ describe('Tool', () => {
 
 		expect(result.success).toBe(false)
 		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
-		expect(result.error.message).toBe('choice: variant; variants 2')
+		expect(result.error.message).toBe(
+			'choice: variant; the value matches none of the 2 declared forms; send it exactly as the schema declares',
+		)
 		expect(recorder.count).toBe(0)
+	})
+
+	it('never tells a caller to remove a key another arm declares', () => {
+		const tool = new Tool({ name: 'pets', parameters: PET_PARAMETERS, execute: () => 'ran' })
+
+		const result = attempt(() => tool.execute({ pet: { kind: 'b', y: '5' } }, context))
+
+		expect(result.success).toBe(false)
+		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
+		expect(result.error.context?.faults).toEqual([
+			{ reason: 'variant', path: ['pet'], variants: 2 },
+		])
+		expect(result.error.message.startsWith('pet: variant; ')).toBe(true)
+		expect(result.error.message).not.toContain('remove it')
+	})
+
+	it('keeps a refusal near 2 KB at 200 long keys, and carries every fault to its limit', () => {
+		const tool = new Tool({ name: 'bare', execute: () => 'ran' })
+		const args = Object.fromEntries(
+			Array.from({ length: 200 }, (_, index) => [`${'k'.repeat(5000)}${String(index)}`, 1]),
+		)
+
+		const result = attempt(() => tool.execute(args, context))
+
+		expect(result.success).toBe(false)
+		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
+		expect(result.error.message.length).toBeLessThanOrEqual(REFUSAL_TEXT_LIMIT)
+		expect(result.error.context?.faults).toHaveLength(FAULT_LIMIT)
+		expect(result.error.message.split('\n').at(-1)).toMatch(/^and \d+ more faults/u)
+	})
+
+	it('keeps a refusal near 2 KB at depth, with long keys under a long path', () => {
+		const keys = Array.from({ length: 80 }, (_, index) => `${'t'.repeat(5000)}${String(index)}`)
+		const tool = new Tool({
+			name: 'deep',
+			parameters: createChainSchema(30),
+			execute: () => 'ran',
+		})
+
+		const result = attempt(() => tool.execute(createChainArguments(20, keys), context))
+
+		expect(result.success).toBe(false)
+		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
+		expect(result.error.message.length).toBeLessThanOrEqual(REFUSAL_TEXT_LIMIT)
+		expect(result.error.message.split('\n')[0]).toContain('child.….')
+		expect(result.error.context?.faults).toHaveLength(FAULT_LIMIT)
 	})
 
 	it('hands the published leaf repairs to the handler', () => {
@@ -410,9 +477,7 @@ describe('Tool', () => {
 		expect(recorder.count).toBe(2)
 	})
 
-	it('refuses a parse that becomes undefined after a clean explanation', () => {
-		const shape = objectShape({ amount: numberShape() })
-		const contract = createContract(shape)
+	it('reads each top-level argument once across the whole door', () => {
 		const reads = createRecorder<[]>()
 		const args: Readonly<Record<string, unknown>> = Object.defineProperty({}, 'amount', {
 			enumerable: true,
@@ -421,9 +486,70 @@ describe('Tool', () => {
 				return reads.count === 1 ? 3 : 'invalid'
 			},
 		})
-		expect(contract.explain(args)).toEqual([])
-		expect(contract.parse(args)).toBeUndefined()
-		reads.clear()
+		const tool = new Tool({
+			name: 'once',
+			contract: objectShape({ amount: numberShape() }),
+			execute: (received) => received,
+		})
+
+		expect(tool.execute(args, context)).toEqual({ amount: 3 })
+		expect(reads.count).toBe(1)
+	})
+
+	it('refuses a record it cannot read, with the read failure as the cause', () => {
+		const failure = new Error('blocked read')
+		const args: Readonly<Record<string, unknown>> = Object.defineProperty({}, 'amount', {
+			enumerable: true,
+			get: () => {
+				throw failure
+			},
+		})
+		const entered = createRecorder<[]>()
+		const tool = new Tool({ name: 'blocked', strict: true, execute: entered.handler })
+
+		const result = attempt(() => tool.execute(args, context))
+
+		expect(result.success).toBe(false)
+		if (result.success || !isToolError(result.error)) throw new Error('Expected an argument error')
+		expect(result.error.code).toBe('ARGUMENTS')
+		expect(result.error.message).toBe(
+			'Arguments could not be read; send one JSON object of plain values',
+		)
+		expect(result.error.cause).toBe(failure)
+		expect(entered.count).toBe(0)
+	})
+
+	it('walks a valid record only with the guard and the parser', () => {
+		const reads = createRecorder<[]>()
+		const page: Readonly<Record<string, unknown>> = Object.defineProperty({}, 'limit', {
+			enumerable: true,
+			get: () => {
+				reads.handler()
+				return 3
+			},
+		})
+		const tool = new Tool({
+			name: 'fast',
+			contract: objectShape({ page: objectShape({ limit: numberShape() }) }),
+			execute: () => 'ran',
+		})
+
+		expect(tool.execute({ page }, context)).toBe('ran')
+		expect(reads.count).toBe(2)
+	})
+
+	it('refuses a nested value that stops parsing after the guard passed', () => {
+		const inner = objectShape({ amount: numberShape() })
+		const shape = objectShape({ page: inner })
+		const reads = createRecorder<[]>()
+		const page: Readonly<Record<string, unknown>> = Object.defineProperty({}, 'amount', {
+			enumerable: true,
+			get: () => {
+				reads.handler()
+				return reads.count === 1 ? 3 : 'invalid'
+			},
+		})
+		const args = { page }
 		const entered = createRecorder<[Readonly<Record<string, unknown>>, ToolContext]>()
 		const tool = new Tool({ name: 'unstable', contract: shape, execute: entered.handler })
 
@@ -462,6 +588,81 @@ describe('Tool', () => {
 		const wrong = attempt(() => tool.execute({ left: 'invalid', right: 2 }, context))
 		expect(wrong.success).toBe(false)
 		expect(tool.execute({ left: 2, right: 3 }, context)).toBe(5)
+	})
+
+	it('hands a declared object over as a null-prototype copy at every declared level', () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>, ToolContext]>()
+		const tool = new Tool({
+			name: 'declared',
+			contract: objectShape({ page: objectShape({ limit: numberShape() }) }),
+			execute: recorder.handler,
+		})
+		const args = { page: { limit: 1 } }
+
+		tool.execute(args, context)
+		const received = recorder.calls[0]?.[0]
+
+		expect(received).toEqual(args)
+		expect(received).not.toBe(args)
+		expect(received?.page).not.toBe(args.page)
+		expect(Object.getPrototypeOf(received)).toBeNull()
+		expect(() => String(received)).toThrow(TypeError)
+		expect(Reflect.get(received ?? {}, 'hasOwnProperty')).toBeUndefined()
+		expect(Object.keys(received ?? {})).toEqual(['page'])
+	})
+
+	it('copies only the top level of an open object, and hands nested values by reference', () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>, ToolContext]>()
+		const tool = new Tool({
+			name: 'open',
+			parameters: { type: 'object' },
+			execute: recorder.handler,
+		})
+		const args = { page: { limit: 1 } }
+
+		tool.execute(args, context)
+		const received = recorder.calls[0]?.[0]
+
+		expect(received).not.toBe(args)
+		expect(received?.page).toBe(args.page)
+		expect(Object.getPrototypeOf(received)).toBeNull()
+	})
+
+	it('hands a raw root over as a plain top-level copy, with nested values by reference', () => {
+		const rows: ReadonlyArray<Readonly<Record<string, unknown>>> = [
+			{},
+			{ $ref: '#/$defs/page', $defs: { page: { type: 'object' } } },
+		]
+		const misses = rows.filter((parameters) => {
+			const recorder = createRecorder<[Readonly<Record<string, unknown>>, ToolContext]>()
+			const tool = new Tool({ name: 'raw', parameters, execute: recorder.handler })
+			const args = { page: { limit: 1 } }
+			tool.execute(args, context)
+			const received = recorder.calls[0]?.[0]
+			return (
+				received === args ||
+				received?.page !== args.page ||
+				Object.getPrototypeOf(received) !== Object.prototype
+			)
+		})
+
+		expect(misses).toEqual([])
+	})
+
+	it('reads a parameters record once, so a later mutation leaves the door behind', () => {
+		const parameters: { type: string; additionalProperties: boolean; properties: object } = {
+			type: 'object',
+			additionalProperties: false,
+			properties: { before: { type: 'string' } },
+		}
+		const tool = new Tool({ name: 'drift', parameters, execute: () => 'ran' })
+
+		expect(tool.execute({ before: 'x' }, context)).toBe('ran')
+		parameters.properties = { after: { type: 'string' } }
+
+		expect(tool.parameters?.properties).toEqual({ after: { type: 'string' } })
+		expect(tool.execute({ before: 'x' }, context)).toBe('ran')
+		expect(attempt(() => tool.execute({ after: 'x' }, context)).success).toBe(false)
 	})
 
 	it('holds a schema closed only where it says so', () => {
@@ -588,6 +789,32 @@ describe('Tool', () => {
 		)
 		expect(isContractError(result.error.cause)).toBe(true)
 		expect(recorder.count).toBe(0)
+	})
+
+	for (const [title, parameters] of NON_RECORD_PARAMETERS) {
+		for (const strict of [true, false]) {
+			it(`refuses ${title} as parameters when strict is ${String(strict)}`, () => {
+				const result = attempt((): unknown =>
+					Reflect.construct(Tool, [{ name: 'bad', parameters, strict, execute: () => 'ran' }]),
+				)
+
+				expect(result.success).toBe(false)
+				if (result.success || !isToolError(result.error)) throw new Error('Expected a schema error')
+				expect(result.error.code).toBe('SCHEMA')
+			})
+		}
+	}
+
+	it('names the remedy when it refuses parameters', () => {
+		const result = attempt((): unknown =>
+			Reflect.construct(Tool, [{ name: 'bad', parameters: 5, execute: () => 'ran' }]),
+		)
+
+		expect(result.success).toBe(false)
+		if (result.success || !isToolError(result.error)) throw new Error('Expected a schema error')
+		expect(result.error.message).toBe(
+			'Tool "bad" needs parameters that are a plain JSON Schema record; received 5; pass an object such as { type: \'object\', properties: {} }, or leave parameters out',
+		)
 	})
 
 	it('compiles a contract at construction, failing an owned declaration early', () => {
