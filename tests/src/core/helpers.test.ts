@@ -17,6 +17,7 @@ import {
 	buildCallRefusal,
 	describeFaultLine,
 	describeFaults,
+	extractForms,
 	extractPath,
 	extractSchema,
 	readCall,
@@ -269,6 +270,17 @@ describe('extractPath', () => {
 	})
 })
 
+describe('extractForms', () => {
+	it('lists a schema, then the arms of its union, and nothing for no schema', () => {
+		const object = { type: 'object' } as const
+		const nullable = { anyOf: [object, { type: 'null' }] } as const
+
+		expect(extractForms(object)).toEqual([object])
+		expect(extractForms(nullable)).toEqual([nullable, object, { type: 'null' }])
+		expect(extractForms(undefined)).toEqual([])
+	})
+})
+
 describe('extractSchema', () => {
 	const leaf = { type: 'number' } as const
 	const closed = { type: 'object', properties: { leaf } } as const
@@ -364,6 +376,25 @@ describe('describeFaultLine', () => {
 				},
 			),
 		).toBe('rows.0.typo: extra; this key is not declared, remove it or use a declared key: id')
+	})
+
+	it('reads the declared keys through a nullable parent', () => {
+		expect(
+			describeFaultLine(
+				{ reason: 'extra', path: ['page', 'limti'] },
+				{
+					type: 'object',
+					properties: {
+						page: {
+							anyOf: [
+								{ type: 'object', properties: { limit: { type: 'integer' } } },
+								{ type: 'null' },
+							],
+						},
+					},
+				},
+			),
+		).toBe('page.limti: extra; this key is not declared, remove it or use a declared key: limit')
 	})
 
 	it('says only to remove a key where nothing is declared', () => {

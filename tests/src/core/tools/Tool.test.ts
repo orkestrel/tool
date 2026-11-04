@@ -443,6 +443,112 @@ describe('Tool', () => {
 		})
 	})
 
+	it('repairs a coercible value through a nullable, as Pydantic declares an optional field', () => {
+		const tool = new Tool({
+			name: 'search',
+			parameters: {
+				type: 'object',
+				title: 'searchArguments',
+				properties: {
+					limit: { anyOf: [{ type: 'integer' }, { type: 'null' }], default: null, title: 'Limit' },
+				},
+			},
+			execute: (args) => args,
+		})
+
+		expect(tool.execute({ limit: '5' }, context)).toEqual({ limit: 5 })
+		expect(tool.execute({ limit: 5 }, context)).toEqual({ limit: 5 })
+		expect(tool.execute({ limit: null }, context)).toEqual({ limit: null })
+		expect(tool.execute({}, context)).toEqual({})
+
+		const refused = attempt(() => tool.execute({ limit: 'many' }, context))
+		expect(refused.success).toBe(false)
+		if (refused.success || !isToolError(refused.error))
+			throw new Error('Expected an argument error')
+		expect(refused.error.message).toBe('limit: type; expected integer; received "many"')
+	})
+
+	it('reports the inner fault of a nullable closed object, with its declared keys', () => {
+		const tool = new Tool({
+			name: 'search',
+			parameters: {
+				type: 'object',
+				properties: {
+					page: {
+						anyOf: [
+							{
+								type: 'object',
+								properties: { limit: { type: 'integer' } },
+								additionalProperties: false,
+							},
+							{ type: 'null' },
+						],
+					},
+				},
+			},
+			execute: (args) => args,
+		})
+
+		const refused = attempt(() => tool.execute({ page: { limti: 5 } }, context))
+
+		expect(refused.success).toBe(false)
+		if (refused.success || !isToolError(refused.error))
+			throw new Error('Expected an argument error')
+		expect(refused.error.context?.faults).toEqual([{ reason: 'extra', path: ['page', 'limti'] }])
+		expect(refused.error.message).toBe(
+			'page.limti: extra; this key is not declared, remove it or use a declared key: limit',
+		)
+	})
+
+	it('names null among the candidates when a nullable literal refuses', () => {
+		const tool = new Tool({
+			name: 'unit',
+			parameters: { type: 'object', properties: { unit: { enum: ['c', null] } } },
+			execute: (args) => args,
+		})
+
+		const refused = attempt(() => tool.execute({ unit: 'k' }, context))
+
+		expect(refused.success).toBe(false)
+		if (refused.success || !isToolError(refused.error))
+			throw new Error('Expected an argument error')
+		expect(refused.error.message).toBe(
+			'unit: type; expected literal; received "k"; send one of "c", null',
+		)
+	})
+
+	it('refuses a non-record even where a typeless schema admits one', () => {
+		const tool = new Tool({
+			name: 'typeless',
+			parameters: { properties: { a: { type: 'string' } } },
+			execute: () => 'ran',
+		})
+
+		const refused = attempt((): unknown => Reflect.apply(tool.execute, tool, ['text', context]))
+
+		expect(refused.success).toBe(false)
+		if (refused.success || !isToolError(refused.error))
+			throw new Error('Expected an argument error')
+		expect(refused.error.code).toBe('ARGUMENTS')
+		expect(tool.execute({ a: 'x' }, context)).toBe('ran')
+	})
+
+	it('refuses a coercion through a typeless schema, which converts to a union', () => {
+		const tool = new Tool({
+			name: 'typeless',
+			parameters: { properties: { count: { type: 'number' } } },
+			execute: (args) => args,
+		})
+
+		const refused = attempt(() => tool.execute({ count: '5' }, context))
+
+		expect(refused.success).toBe(false)
+		if (refused.success || !isToolError(refused.error))
+			throw new Error('Expected an argument error')
+		expect(refused.error.message.startsWith(': variant; ')).toBe(true)
+		expect(tool.execute({ count: 5 }, context)).toEqual({ count: 5 })
+	})
+
 	it('validates with explain and forwards parsed arguments with coercion', () => {
 		const shape = objectShape({ amount: numberShape() })
 		const contract = createContract(shape)

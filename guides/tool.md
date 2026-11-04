@@ -98,6 +98,7 @@ The advertised-definition projection, the door's report and its text, and the re
 | `toolToDefinition`  | function | `(tool: ToolInterface) => ToolDefinition`                                         | Projects a tool onto the plain definition advertised to a caller, advertising an authored `summary` in place of the full description and carrying `parameters` and `annotations` by reference. |
 | `scanFaults`        | function | `(contract: ContractInterface<unknown>, value: unknown) => readonly AuditFault[]` | Walks an argument record through a contract's reports and returns the faults the Tool door refuses, empty when the record may proceed to `parse`.                                              |
 | `extractPath`       | function | `(fault: AuditFault) => readonly string[]`                                        | Extracts a fault's path as its segments, reading a string path as one segment.                                                                                                                 |
+| `extractForms`      | function | `(schema: JSONSchema \| undefined) => readonly JSONSchema[]`                      | Extracts a schema's forms: the schema itself, then the arms of its `anyOf`, so a read looks through a nullable the same way everywhere.                                                        |
 | `extractSchema`     | function | `(schema: JSONSchema, path: readonly string[]) => JSONSchema \| undefined`        | Extracts the part of a schema a path reaches, through properties, array items, record values, and the arms of a union.                                                                         |
 | `renderPath`        | function | `(path: readonly string[]) => string`                                             | Renders a path as text, encoding what a caller could have sent and eliding the middle of a long one.                                                                                           |
 | `renderList`        | function | `(entries: readonly string[]) => string`                                          | Renders a list as text, naming at most `REFUSAL_LIST_LIMIT` of its entries and counting the rest.                                                                                              |
@@ -420,6 +421,10 @@ values by reference.
 
 The leaf coercions `parse` publishes stay accepted: `'30.0'` reaches the handler as `30`, `'true'`
 as `true`, and a finite number as its string, because a model's argument text is what a tool receives.
+`anyOf: [T, { type: 'null' }]` converts to a nullable rather than a union, so `'5'` reaches the handler
+of an `Optional[int]` as `5`, and a refusal there names the inner fault. A schema with `properties` and
+no `type` converts to a union, because it also admits a non-object, so a coercion through it refuses as
+`variant` at the root and the faults under that root are left out.
 
 A schema `default` never refuses a call, and `parse` fills it only where the lenient conversion carries
 it: a primitive or literal default on an optional key of a closed object with no union ancestor. See

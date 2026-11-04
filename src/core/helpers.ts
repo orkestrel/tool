@@ -61,6 +61,25 @@ export function extractPath(fault: AuditFault): readonly string[] {
 }
 
 /**
+ * Extracts a schema's forms: the schema itself, then the arms of its `anyOf`, so a read looks
+ * through a nullable the same way everywhere.
+ *
+ * @param schema - The schema to read, or `undefined` where none was found
+ * @returns The forms, empty when there is no schema
+ *
+ * @example
+ * ```ts
+ * import { extractForms } from '@orkestrel/tool'
+ *
+ * const object = { type: 'object' } as const
+ * extractForms({ anyOf: [object] }) // [{ anyOf: [object] }, object]
+ * ```
+ */
+export function extractForms(schema: JSONSchema | undefined): readonly JSONSchema[] {
+	return schema === undefined ? [] : [schema, ...(schema.anyOf ?? [])]
+}
+
+/**
  * Extracts the part of a schema a path reaches, through properties, array items, record values,
  * and the arms of a union.
  *
@@ -83,7 +102,7 @@ export function extractPath(fault: AuditFault): readonly string[] {
 export function extractSchema(schema: JSONSchema, path: readonly string[]): JSONSchema | undefined {
 	return path.reduce<JSONSchema | undefined>(
 		(node, key) =>
-			(node === undefined ? [] : [node, ...(node.anyOf ?? [])])
+			extractForms(node)
 				.map((form) =>
 					form.properties !== undefined && Object.hasOwn(form.properties, key)
 						? form.properties[key]
@@ -231,7 +250,9 @@ export function describeFaultLine(fault: AuditFault, schema: JSONSchema): string
 	const path = extractPath(fault)
 	const head = `${renderPath(path)}: ${fault.reason}`
 	if (fault.reason === 'extra') {
-		const keys = Object.keys(extractSchema(schema, path.slice(0, -1))?.properties ?? {})
+		const keys = extractForms(extractSchema(schema, path.slice(0, -1))).flatMap((form) =>
+			Object.keys(form.properties ?? {}),
+		)
 		return keys.length === 0
 			? `${head}; this key is not declared, remove it`
 			: `${head}; this key is not declared, remove it or use a declared key: ${renderList(keys.map((key) => renderPath([key])))}`
@@ -252,8 +273,8 @@ export function describeFaultLine(fault: AuditFault, schema: JSONSchema): string
 		return `${head}; ${claim}; send it exactly as the schema declares${shown}`
 	}
 	const candidates =
-		fault.expected === 'literal' && node !== undefined
-			? [node, ...(node.anyOf ?? [])].flatMap((form) => [
+		fault.expected === 'literal'
+			? extractForms(node).flatMap((form) => [
 					...(form.enum ?? []).map((value) => preview(value)),
 					...(form.type === 'null' ? [preview(null)] : []),
 				])
