@@ -6,6 +6,7 @@ import {
 	booleanShape,
 	createContract,
 	isContractError,
+	literalShape,
 	numberShape,
 	objectShape,
 	optionalShape,
@@ -26,6 +27,7 @@ import {
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import {
 	NON_RECORD_PARAMETERS,
+	LOSSY_NUMBER_ARGUMENTS,
 	OPEN_ARGUMENTS,
 	PET_PARAMETERS,
 	SCHEMA_DEFAULT_CALLS,
@@ -482,6 +484,75 @@ describe('Tool', () => {
 		expect(result.error.context?.faults).toHaveLength(FAULT_LIMIT)
 	})
 
+	it('refuses numeric repairs that change meaning before the handler runs', () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>, ToolContext]>()
+		const tool = new Tool({
+			name: 'count',
+			contract: objectShape({ count: numberShape() }),
+			execute: recorder.handler,
+		})
+		for (const count of LOSSY_NUMBER_ARGUMENTS) {
+			const refused = attempt(() => tool.execute({ count }, context))
+			expect(refused.success).toBe(false)
+			if (refused.success || !isToolError(refused.error))
+				throw new Error('Expected an argument error')
+			expect(refused.error.code).toBe('ARGUMENTS')
+			expect(refused.error.message).toContain('count: type; expected number')
+			expect(refused.error.message).toContain('send')
+			expect(refused.error.context?.faults).toEqual([
+				{ reason: 'type', path: ['count'], expected: 'number', received: JSON.stringify(count) },
+			])
+		}
+		expect(recorder.count).toBe(0)
+	})
+
+	it('refuses a numeric boolean repair and accepts its explicit text', () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>, ToolContext]>()
+		const tool = new Tool({
+			name: 'flag',
+			contract: objectShape({ flag: booleanShape() }),
+			execute: recorder.handler,
+		})
+		const refused = attempt(() => tool.execute({ flag: 1 }, context))
+		expect(refused.success).toBe(false)
+		if (refused.success || !isToolError(refused.error))
+			throw new Error('Expected an argument error')
+		expect(refused.error.message).toContain('send')
+		expect(recorder.count).toBe(0)
+		tool.execute({ flag: 'true' }, context)
+		expect(recorder.calls[0]?.[0]).toEqual({ flag: true })
+	})
+
+	it('repairs a named union arm and reports its invalid limit without hiding it', () => {
+		const tool = new Tool({
+			name: 'search',
+			contract: unionShape(
+				objectShape({ operation: literalShape(['find']), limit: numberShape() }),
+				objectShape({ operation: literalShape(['get']), id: stringShape() }),
+			),
+			execute: (args) => args,
+		})
+		expect(tool.execute({ operation: 'find', limit: '5' }, context)).toEqual({
+			operation: 'find',
+			limit: 5,
+		})
+		const refused = attempt(() => tool.execute({ operation: 'find', limit: 'many' }, context))
+		expect(refused.success).toBe(false)
+		if (refused.success || !isToolError(refused.error))
+			throw new Error('Expected an argument error')
+		expect(refused.error.message).toBe('limit: type; expected number; received "many"')
+		expect(refused.error.context?.faults).toEqual([
+			{ reason: 'type', path: ['limit'], expected: 'number', received: '"many"' },
+		])
+		const unmatched = attempt(() => tool.execute({ operation: 'other' }, context))
+		expect(unmatched.success).toBe(false)
+		if (unmatched.success || !isToolError(unmatched.error))
+			throw new Error('Expected an argument error')
+		expect(unmatched.error.message).toContain('one of:')
+		expect(unmatched.error.message).toContain('"find"')
+		expect(unmatched.error.message).toContain('"get"')
+	})
+
 	it('hands the published leaf repairs to the handler', () => {
 		const tool = new Tool({
 			name: 'leaves',
@@ -489,7 +560,12 @@ describe('Tool', () => {
 			execute: (args) => args,
 		})
 
-		expect(tool.execute({ count: '30.0', flag: 'true', label: 5 }, context)).toEqual({
+		expect(tool.execute({ count: '30', flag: 'true', label: 5 }, context)).toEqual({
+			count: 30,
+			flag: true,
+			label: '5',
+		})
+		expect(tool.execute({ count: ' 30 ', flag: 'true', label: 5 }, context)).toEqual({
 			count: 30,
 			flag: true,
 			label: '5',

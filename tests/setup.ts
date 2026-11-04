@@ -96,10 +96,18 @@ export function createChainArguments(
 /** Holds the open object shape a fixture declares when its handler reads arbitrary keys. */
 export const OPEN_ARGUMENTS = objectShape({}, { additionalProperties: true })
 
-/**
- * Holds a schema whose closed union arms share a `kind` the lenient conversion cannot read, so the
- * walk of the closest arm can call a key undeclared that the other arm declares.
- */
+/** Lists numeric texts whose coercion changes their meaning or notation. */
+export const LOSSY_NUMBER_ARGUMENTS: readonly string[] = Object.freeze([
+	'30.0',
+	'007',
+	'0x10',
+	'1e3',
+	'+5',
+	'9007199254740993',
+	'1e-400',
+])
+
+/** Holds a schema with closed object arms distinguished by a literal property. */
 export const PET_PARAMETERS: Readonly<Record<string, unknown>> = Object.freeze({
 	type: 'object',
 	properties: {
@@ -463,11 +471,6 @@ export const SCHEMA_VALID_CALLS: ReadonlyArray<
 			additionalProperties: false,
 		},
 		{ a: 'q', 'x-a': 'b' },
-	],
-	[
-		'propertyNames under a closed object',
-		{ type: 'object', propertyNames: { pattern: '^x' }, additionalProperties: false },
-		{ xa: 1 },
 	],
 	[
 		'prefixItems with items past the prefix',

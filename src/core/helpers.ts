@@ -7,6 +7,7 @@ import {
 	isRecord,
 	isString,
 	limitEntries,
+	matchesLosslessRepair,
 	preview,
 } from '@orkestrel/contract'
 import { REFUSAL_LIST_LIMIT, REFUSAL_SCHEMA_LIMIT, REFUSAL_TEXT_LIMIT } from './constants.js'
@@ -155,8 +156,10 @@ export function extractSchema(schema: JSONSchema, path: readonly string[]): JSON
  * them, so one refusal names them all: a union repairs by declaration order, so a coercion through
  * one is not a repair. Where a union fault covers a path, every fault under that path is left out, because
  * those come from the walk of one arm and can call a key undeclared that another arm declares. A
- * coercible leaf alone does not refuse, unless the audit reached `FAULT_LIMIT`, where its cap can
- * hide an undeclared key. The report holds at most `FAULT_LIMIT` entries.
+ * leaf repair passes only when `matchesLosslessRepair` confirms it preserves meaning. An audit
+ * at `FAULT_LIMIT` refuses because its cap can hide an undeclared key. The report holds at most
+ * `FAULT_LIMIT` entries. A union that names one arm reports that arm's faults without a covering
+ * `variant`, so its lossless leaf repairs pass and its invalid leaves keep their paths.
  *
  * @param contract - The compiled contract of the tool's arguments
  * @param value - The arguments record the caller sent
@@ -178,11 +181,10 @@ export function scanFaults(
 ): readonly AuditFault[] {
 	if (contract.is(value)) return []
 	const audited = contract.audit(value)
+	const parsed = contract.parse(value)
 	const merged = [
-		...(contract.parse(value) === undefined ? contract.explain(value) : []),
-		...audited.filter(
-			(fault) => fault.reason === 'extra' || fault.reason === 'variant' || fault.reason === 'oneOf',
-		),
+		...(parsed === undefined ? contract.explain(value) : []),
+		...audited.filter((fault) => !matchesLosslessRepair(fault, value, parsed)),
 	]
 	const faults = [
 		...new Map(

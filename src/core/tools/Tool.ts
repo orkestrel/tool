@@ -18,7 +18,8 @@ import { describeFaults, parametersToSchema, scanFaults } from '../helpers.js'
  *
  * @remarks
  * Advertised fields and execution context are forwarded by reference. Every call runs the door
- * before the handler: it reads each top-level argument once, then a parse fault, an undeclared key
+ * before the handler: it reads each top-level argument once, then a parse fault, a repair that
+ * fails `matchesLosslessRepair`, an undeclared key
  * of a closed object, a report at `FAULT_LIMIT`, and a union fault each throw a `ToolError` with
  * code `ARGUMENTS`. The handler receives what `parse` returns: a fresh null-prototype record at
  * each declared object, on which `String(args)` and `args.hasOwnProperty()` throw, while an open
@@ -114,7 +115,15 @@ export class Tool implements ToolInterface {
 		}
 		const faults = scanFaults(contract, owned.value)
 		if (faults.length > 0) {
-			throw new ToolError('ARGUMENTS', describeFaults(faults, contract.schema), { faults })
+			const correction =
+				faults.length === 1 &&
+				faults[0]?.reason === 'type' &&
+				contract.explain(owned.value).length === 0
+					? '; send values in their declared types without coercion'
+					: ''
+			throw new ToolError('ARGUMENTS', describeFaults(faults, contract.schema) + correction, {
+				faults,
+			})
 		}
 		const parsed = contract.parse(owned.value)
 		if (!isRecord(parsed)) {
