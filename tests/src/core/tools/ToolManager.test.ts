@@ -623,7 +623,7 @@ describe('ToolManager execution', () => {
 				name: 'amount',
 				success: false,
 				error:
-					'amount: type; expected number; received "\\"invalid\\""\nsend {"amount": number}; send values in their declared types without coercion',
+					'amount: type; expected number; received "invalid"\nsend {"amount": number}; send values in their declared types without coercion',
 			},
 		)
 		expect(recorder.count).toBe(0)
@@ -646,7 +646,7 @@ describe('ToolManager execution', () => {
 			name: 'amount',
 			success: false,
 			error:
-				'amount: type; expected number; received "\\"invalid\\""\nextra: extra; this key is not declared, remove it or use a declared key: amount\nsend {"amount": number}',
+				'amount: type; expected number; received "invalid"\nextra: extra; this key is not declared, remove it or use a declared key: amount\nsend {"amount": number}',
 		})
 	})
 

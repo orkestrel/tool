@@ -271,7 +271,7 @@ try {
 	code // 'ARGUMENTS'
 	const details: ToolErrorContext | undefined = error.context
 	details?.faults?.[1]?.reason // 'extra'
-	error.message // 'amount: type; expected number; received "\\\\"invalid\\\\""\\nextra: extra; this key is not declared, remove it or use a declared key: amount\\nsend {"amount": number}'
+	error.message // 'amount: type; expected number; received "invalid"\\nextra: extra; this key is not declared, remove it or use a declared key: amount\\nsend {"amount": number}'
 }
 const conflict = new ToolError('SCHEMA', 'Choose contract or parameters')
 conflict.code // 'SCHEMA'
@@ -461,7 +461,7 @@ tools.emitter.destroyed // true`,
 				expect(error.code).toBe('ARGUMENTS')
 				expect(error.context?.faults?.[1]?.reason).toBe('extra')
 				expect(error.message).toBe(
-					'amount: type; expected number; received "\\"invalid\\""\nextra: extra; this key is not declared, remove it or use a declared key: amount\nsend {"amount": number}',
+					'amount: type; expected number; received "invalid"\nextra: extra; this key is not declared, remove it or use a declared key: amount\nsend {"amount": number}',
 				)
 			}
 			const conflict = new ToolError('SCHEMA', 'Choose contract or parameters')
@@ -470,7 +470,7 @@ tools.emitter.destroyed // true`,
 			expect(isToolError(new Error('Unrelated'))).toBe(false)
 			expect(guideText).toContain("code // 'ARGUMENTS'")
 			expect(guideText).toContain(
-				`error.message // 'amount: type; expected number; received "\\\\"invalid\\\\""\\nextra: extra; this key is not declared, remove it or use a declared key: amount\\nsend {"amount": number}'`,
+				`error.message // 'amount: type; expected number; received "invalid"\\nextra: extra; this key is not declared, remove it or use a declared key: amount\\nsend {"amount": number}'`,
 			)
 		})
 

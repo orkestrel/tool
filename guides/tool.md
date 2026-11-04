@@ -486,7 +486,7 @@ try {
 	code // 'ARGUMENTS'
 	const details: ToolErrorContext | undefined = error.context
 	details?.faults?.[1]?.reason // 'extra'
-	error.message // 'amount: type; expected number; received "\\"invalid\\""\nextra: extra; this key is not declared, remove it or use a declared key: amount\nsend {"amount": number}'
+	error.message // 'amount: type; expected number; received "invalid"\nextra: extra; this key is not declared, remove it or use a declared key: amount\nsend {"amount": number}'
 }
 const conflict = new ToolError('SCHEMA', 'Choose contract or parameters')
 conflict.code // 'SCHEMA'
