@@ -1,4 +1,5 @@
 import { ToolError, isToolError } from '@src/core'
+import { FAULT_CONSTRAINTS, FAULT_KINDS, isAuditFault } from '@orkestrel/contract'
 import * as errors from '../../../src/core/errors.js'
 import { describe, expect, it } from 'vitest'
 
@@ -12,6 +13,37 @@ describe('isToolError', () => {
 		const context = { faults: [{ reason: 'extra' as const, path: ['extra'] }] }
 
 		expect(isToolError(new ToolError('ARGUMENTS', 'failure', context))).toBe(true)
+	})
+
+	// The fault vocabulary is contract's, so every kind and constraint contract declares is admitted.
+	it('accepts each fault kind and constraint the installed contract declares', () => {
+		const faults = [
+			...FAULT_KINDS.map((expected) => ({
+				reason: 'type' as const,
+				path: ['args'],
+				expected,
+				received: '"x"',
+			})),
+			...FAULT_CONSTRAINTS.map((constraint) => ({
+				reason: 'constraint' as const,
+				path: ['args'],
+				expected: 'string' as const,
+				constraint,
+				received: '"x"',
+			})),
+		]
+
+		expect(isToolError(new ToolError('ARGUMENTS', 'failure', { faults }))).toBe(true)
+		expect(faults.every((fault) => isAuditFault(fault))).toBe(true)
+	})
+
+	it('refuses a fault carrying a key contract does not declare for its reason', () => {
+		const error = new ToolError('ARGUMENTS', 'failure')
+		Object.defineProperty(error, 'context', {
+			value: { faults: [{ reason: 'missing', path: ['args'], expected: 'string', stray: true }] },
+		})
+
+		expect(isToolError(error)).toBe(false)
 	})
 
 	it('refuses an extra fault whose path is not a path', () => {

@@ -1,5 +1,5 @@
 import type { ToolErrorCode, ToolErrorContext } from './types.js'
-import { arrayOf, holds, INTRINSICS, isFunction, isObject, isString } from '@orkestrel/contract'
+import { arrayOf, holds, INTRINSICS, isAuditFault, isFunction, isObject } from '@orkestrel/contract'
 
 /**
  * Reports a refused tool declaration or refused call arguments with a machine-readable code.
@@ -60,47 +60,6 @@ export function isToolError(value: unknown): value is ToolError {
 		if (!isObject(context) && !isFunction(context)) return false
 		const faults: unknown = INTRINSICS.reflect.read(context, 'faults')
 		if (faults === undefined) return true
-		return arrayOf((fault: unknown) => {
-			if (!isObject(fault)) return false
-			const path: unknown = INTRINSICS.reflect.read(fault, 'path')
-			if (!isString(path) && !arrayOf(isString)(path)) return false
-			const reason: unknown = INTRINSICS.reflect.read(fault, 'reason')
-			if (reason === 'extra') return true
-			if (reason === 'variant') {
-				return typeof INTRINSICS.reflect.read(fault, 'variants') === 'number'
-			}
-			if (reason === 'oneOf') {
-				return typeof INTRINSICS.reflect.read(fault, 'matched') === 'number'
-			}
-			const expected: unknown = INTRINSICS.reflect.read(fault, 'expected')
-			if (
-				![
-					'string',
-					'number',
-					'integer',
-					'boolean',
-					'null',
-					'literal',
-					'array',
-					'object',
-					'union',
-					'json',
-				].some((candidate) => candidate === expected)
-			)
-				return false
-			if (reason === 'missing') return true
-			if (!isString(INTRINSICS.reflect.read(fault, 'received'))) return false
-			if (reason === 'type') return true
-			if (reason !== 'constraint') return false
-			const constraint: unknown = INTRINSICS.reflect.read(fault, 'constraint')
-			const limit: unknown = INTRINSICS.reflect.read(fault, 'limit')
-			return (
-				(constraint === 'min' ||
-					constraint === 'max' ||
-					constraint === 'pattern' ||
-					constraint === 'integer') &&
-				(limit === undefined || typeof limit === 'number' || typeof limit === 'string')
-			)
-		})(faults)
+		return arrayOf(isAuditFault)(faults)
 	})
 }
