@@ -413,7 +413,7 @@ values by reference.
 
 The door admits through `repairValue` from `@orkestrel/contract`, which repairs a lossless leaf: it accepts `'30'` as `30`, `'true'`
 as `true`, and a finite number as its string. It refuses `'30.0'`, which changes the supplied text.
-A model sends the arguments, so state the repair in the description of every tool built on `Tool`.
+A model sends the arguments, so state the repair in the description of every tool that keeps the door, which every tool but a `strict: false` one does.
 The handler receives the admitted value without another parse. The argument snapshot remains
 in this package, and a union may retain that snapshot or its nested values by identity.
 `anyOf: [T, { type: 'null' }]` and `type: [T, 'null']` convert to a nullable rather than a union, so `'5'` reaches the handler
