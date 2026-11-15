@@ -2,7 +2,7 @@ import type { ContractInterface } from '@orkestrel/contract'
 import type { ToolAnnotations, ToolContext, ToolInterface, ToolOptions } from '../types.js'
 import {
 	attempt,
-	admitValue,
+	repairValue,
 	describeFaults,
 	FAULT_TEXT_LIMIT,
 	createContract,
@@ -20,8 +20,8 @@ import { parametersToSchema } from '../helpers.js'
  * Binds an executable tool definition to a handler.
  *
  * @remarks
- * Advertised fields and execution context are forwarded by reference. Every call runs the door
- * before the handler: it reads each top-level argument once, then a parse fault, a repair that
+ * Advertised fields and execution context are forwarded by reference. Every call runs the
+ * `repairValue` door before the handler: it reads each top-level argument once, then a parse fault, a repair that
  * fails `matchesLosslessRepair`, an undeclared key
  * of a closed object, a report at `FAULT_LIMIT`, and a union fault each throw a `ToolError` with
  * code `ARGUMENTS`. The handler receives the admitted value without a second parse. Object parsing makes a fresh null-prototype record at
@@ -116,7 +116,7 @@ export class Tool implements ToolInterface {
 				{ cause: owned.error },
 			)
 		}
-		const admitted = admitValue(contract, owned.value)
+		const admitted = repairValue(contract, owned.value)
 		if (!admitted.success) {
 			const { faults } = admitted.error
 			if ('cause' in admitted.error) {

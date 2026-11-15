@@ -3,7 +3,7 @@ import type { ToolCall, ToolContext, ToolErrorContext, ToolInterface, ToolOption
 import {
 	FAULT_LIMIT,
 	FAULT_TEXT_LIMIT,
-	admitValue,
+	repairValue,
 	attempt,
 	booleanShape,
 	createContract,
@@ -45,7 +45,7 @@ describe('Tool', () => {
 			},
 		})
 		const shape = objectShape({ nested: objectShape({ amount: numberShape() }) })
-		const admitted = admitValue(createContract(shape), { nested })
+		const admitted = repairValue(createContract(shape), { nested })
 		expect(admitted.success).toBe(true)
 		const reads = calls.count
 		calls.clear()
