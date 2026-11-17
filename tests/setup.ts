@@ -56,6 +56,7 @@ export function createExplainRecorder(
 		parse: contract.parse,
 		audit: contract.audit,
 		generate: contract.generate,
+		own: contract.own,
 		explain: (value) => {
 			record()
 			return contract.explain(value)
